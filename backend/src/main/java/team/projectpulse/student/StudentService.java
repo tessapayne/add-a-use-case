@@ -9,8 +9,6 @@ import jakarta.transaction.Transactional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -72,7 +70,8 @@ public class StudentService {
     }
 
     public Student findStudentById(Integer studentId) {
-        return this.studentRepository.findById(studentId)
+        return this.studentRepository.findAccessible(studentId, this.userUtils.getUserId(),
+                        this.userUtils.hasRoleIncludingHierarchy("ROLE_instructor"), true, true)
                 .orElseThrow(() -> new ObjectNotFoundException("student", studentId));
     }
 
@@ -105,24 +104,38 @@ public class StudentService {
     }
 
     public Student updateStudent(Integer studentId, Student update) {
-        Student oldStudent = this.studentRepository.findById(studentId)
-                .orElseThrow(() -> new ObjectNotFoundException("student", studentId));
+        return updateStudent(studentId, update, false);
+    }
 
-        // If the user is not an admin, then the user can only update her username, first rubricName, last rubricName, and email
-        oldStudent.setUsername(update.getUsername());
-        oldStudent.setFirstName(update.getFirstName());
-        oldStudent.setLastName(update.getLastName());
-        oldStudent.setEmail(update.getEmail());
-
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-
-        // If the user is an admin, then the user can update all the fields
-        if (authentication.getAuthorities().stream().anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals("ROLE_instructor"))) {
-            oldStudent.setEnabled(update.isEnabled());
-//            oldStudent.setRoles(update.getRoles());
+    /** Body status is never a lifecycle instruction; restoration is explicit and atomic with profile saving. */
+    public Student updateStudent(Integer studentId, Student update, boolean reactivate) {
+        Integer callerId = this.userUtils.getUserId();
+        boolean instructor = this.userUtils.hasRoleIncludingHierarchy("ROLE_instructor");
+        requireLocked(studentId, callerId, instructor, reactivate, !reactivate);
+        if (this.studentRepository.writeProfile(studentId, callerId, instructor, reactivate, !reactivate,
+                update.getUsername(), update.getFirstName(), update.getLastName(), update.getEmail()) != 1) {
+            throw new ObjectNotFoundException("student", studentId);
         }
+        if (reactivate && this.studentRepository.writeStatus(studentId, callerId, instructor, true, false, true) != 1) {
+            throw new ObjectNotFoundException("student", studentId);
+        }
+        // Bulk writes clear managed state, and a locking read sees the current committed row, not an old snapshot.
+        return requireLocked(studentId, callerId, instructor, reactivate, !reactivate);
+    }
 
-        return this.studentRepository.save(oldStudent);
+    public Student deactivateStudent(Integer studentId) {
+        Integer callerId = this.userUtils.getUserId();
+        boolean instructor = this.userUtils.hasRoleIncludingHierarchy("ROLE_instructor");
+        requireLocked(studentId, callerId, instructor, true, false);
+        if (this.studentRepository.writeStatus(studentId, callerId, instructor, true, false, false) != 1) {
+            throw new ObjectNotFoundException("student", studentId);
+        }
+        return requireLocked(studentId, callerId, instructor, true, false);
+    }
+
+    private Student requireLocked(Integer studentId, Integer callerId, boolean instructor, boolean allowOwner, boolean allowSelf) {
+        return this.studentRepository.lockAccessible(studentId, callerId, instructor, allowOwner, allowSelf)
+                .orElseThrow(() -> new ObjectNotFoundException("student", studentId));
     }
 
     public void deleteStudent(Integer studentId) {

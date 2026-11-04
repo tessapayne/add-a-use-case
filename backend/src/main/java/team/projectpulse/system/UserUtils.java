@@ -9,17 +9,20 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
 
 @Component
 public class UserUtils {
 
     private final InstructorRepository instructorRepository;
     private final StudentRepository studentRepository;
+    private final RoleHierarchy roleHierarchy;
 
 
-    public UserUtils(InstructorRepository instructorRepository, StudentRepository studentRepository) {
+    public UserUtils(InstructorRepository instructorRepository, StudentRepository studentRepository, RoleHierarchy roleHierarchy) {
         this.instructorRepository = instructorRepository;
         this.studentRepository = studentRepository;
+        this.roleHierarchy = roleHierarchy;
     }
 
     public Integer getUserId() {
@@ -108,5 +111,13 @@ public class UserUtils {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         return authentication.getAuthorities().stream()
                 .anyMatch(grantedAuthority -> grantedAuthority.getAuthority().equals(role));
+    }
+
+    /** Use for lifecycle authority, where an admin inherits instructor authority on the server. */
+    public boolean hasRoleIncludingHierarchy(String role) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.isAuthenticated()
+                && this.roleHierarchy.getReachableGrantedAuthorities(authentication.getAuthorities()).stream()
+                .anyMatch(authority -> authority.getAuthority().equals(role));
     }
 }

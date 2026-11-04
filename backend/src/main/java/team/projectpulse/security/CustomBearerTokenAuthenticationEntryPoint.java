@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerExceptionResolver;
 
 import java.io.IOException;
+import org.springframework.security.oauth2.jwt.JwtValidationException;
 
 /**
  * This class handles unsuccessful JWT authentication.
@@ -30,6 +31,13 @@ public class CustomBearerTokenAuthenticationEntryPoint implements Authentication
 
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response, AuthenticationException authException) throws IOException, ServletException {
+        for (Throwable cause = authException; cause != null; cause = cause.getCause()) {
+            if (cause instanceof JwtValidationException validation && validation.getErrors().stream()
+                    .anyMatch(error -> ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE.equals(error.getErrorCode()))) {
+                this.resolver.resolveException(request, response, null, new AccountStoreUnavailableException());
+                return;
+            }
+        }
         this.resolver.resolveException(request, response, null, authException);
     }
 

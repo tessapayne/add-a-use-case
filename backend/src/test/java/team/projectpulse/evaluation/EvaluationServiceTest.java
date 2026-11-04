@@ -305,6 +305,8 @@ class EvaluationServiceTest {
         given(this.clock.getZone()).willReturn(fixedClock.getZone());
 
         PeerEvaluation newPeerEvaluation = new PeerEvaluation("2023-W31", amanda, woody, List.of(), "public comment", "private comment");
+        given(this.studentRepository.lockById(amanda.getId())).willReturn(Optional.of(amanda));
+        given(this.studentRepository.findById(woody.getId())).willReturn(Optional.of(woody));
         given(this.evaluationRepository.save(newPeerEvaluation)).willReturn(newPeerEvaluation);
 
         // When
@@ -403,7 +405,9 @@ class EvaluationServiceTest {
         given(this.clock.getZone()).willReturn(fixedClock.getZone());
 
         PeerEvaluation newPeerEvaluation = new PeerEvaluation("2023-W31", john, eric, List.of(), "public comment", "private comment");
-        given(this.evaluationRepository.findByWeekAndEvaluatorIdAndEvaluateeId("2023-W31", 3, 4)).willReturn(Optional.of(newPeerEvaluation));
+        given(this.studentRepository.lockById(3)).willReturn(Optional.of(john));
+        given(this.studentRepository.findById(4)).willReturn(Optional.of(eric));
+        given(this.evaluationRepository.findExistingForCreation("2023-W31", 3, 4)).willReturn(Optional.of(newPeerEvaluation));
 
         // When
         Throwable throwable = catchThrowable(() -> this.evaluationService.addPeerEvaluation(newPeerEvaluation));
@@ -412,6 +416,20 @@ class EvaluationServiceTest {
         assertThat(throwable)
                 .isInstanceOf(PeerEvaluationIllegalArgumentException.class)
                 .hasMessage("You have already submitted an evaluation for " + newPeerEvaluation.getEvaluatee().getFirstName() + " in this week.");
+    }
+
+    @Test
+    void testInactiveRecipientCreationRejectedWithoutSaving() {
+        Clock fixed = Clock.fixed(Instant.parse("2023-08-08T00:00:00Z"), ZoneOffset.UTC);
+        given(this.clock.instant()).willReturn(fixed.instant());
+        given(this.clock.getZone()).willReturn(fixed.getZone());
+        eric.setEnabled(false);
+        given(this.studentRepository.lockById(3)).willReturn(Optional.of(john));
+        given(this.studentRepository.findById(4)).willReturn(Optional.of(eric));
+        PeerEvaluation draft = new PeerEvaluation("2023-W31", john, eric, List.of(), "draft", "private");
+        assertThatThrownBy(() -> this.evaluationService.addPeerEvaluation(draft))
+                .isInstanceOf(PeerEvaluationIllegalArgumentException.class).hasMessageContaining("inactive");
+        org.mockito.Mockito.verify(this.evaluationRepository, org.mockito.Mockito.never()).save(any());
     }
 
     @Test

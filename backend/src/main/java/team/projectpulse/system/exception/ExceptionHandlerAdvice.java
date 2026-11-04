@@ -37,6 +37,12 @@ import java.util.Map;
 @RestControllerAdvice
 public class ExceptionHandlerAdvice {
 
+    @ExceptionHandler(team.projectpulse.security.AccountStoreUnavailableException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    Result handleAccountStoreUnavailable(team.projectpulse.security.AccountStoreUnavailableException ex) {
+        return new Result(false, StatusCode.SERVICE_UNAVAILABLE, ex.getMessage());
+    }
+
     @ExceptionHandler(ObjectNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     Result handleObjectNotFoundException(ObjectNotFoundException ex) {

@@ -67,8 +67,16 @@ public class EvaluationService {
             throw new PeerEvaluationIllegalArgumentException("The evaluator and evaluatee must be on the same team.");
         }
 
-        // Make sure this is not a duplicate evaluation
-        if (this.evaluationRepository.findByWeekAndEvaluatorIdAndEvaluateeId(newPeerEvaluation.getWeek(), newPeerEvaluation.getEvaluator().getId(), newPeerEvaluation.getEvaluatee().getId()).isPresent()) {
+        // Serialize all creations by this evaluator through commit/rollback, including lost-response retries.
+        this.studentRepository.lockById(newPeerEvaluation.getEvaluator().getId())
+                .orElseThrow(() -> new PeerEvaluationIllegalArgumentException("Only a student may submit a peer evaluation."));
+        // Re-resolve recipient status in this transaction; creation-only, never imposed on existing edits.
+        Student recipient = this.studentRepository.findById(newPeerEvaluation.getEvaluatee().getId())
+                .orElseThrow(() -> new ObjectNotFoundException("student", newPeerEvaluation.getEvaluatee().getId()));
+        if (!recipient.isEnabled()) {
+            throw new PeerEvaluationIllegalArgumentException("This student is inactive and cannot receive a new peer evaluation.");
+        }
+        if (this.evaluationRepository.findExistingForCreation(newPeerEvaluation.getWeek(), newPeerEvaluation.getEvaluator().getId(), newPeerEvaluation.getEvaluatee().getId()).isPresent()) {
             throw new PeerEvaluationIllegalArgumentException("You have already submitted an evaluation for " + newPeerEvaluation.getEvaluatee().getFirstName() + " in this week.");
         }
 
