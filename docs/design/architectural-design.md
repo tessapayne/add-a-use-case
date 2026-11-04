@@ -302,7 +302,10 @@ sequenceDiagram
     API-->>SPA: Result { token: JWT (RSA-2048, 2h) }
     SPA->>SPA: store token (Pinia), set Bearer header
     SPA->>API: GET /api/v1/... (Bearer JWT)
-    API->>API: verify JWT, then AuthorizationManager (ownership/membership)
+    API->>API: verify JWT signature and expiry
+    API->>DB: check current account enabled (designed; pending implementation)
+    DB-->>API: current account status
+    API->>API: refuse inactive account; otherwise AuthorizationManager (ownership/membership)
     API-->>SPA: Result { data }
 ```
 
@@ -430,8 +433,9 @@ Single-tenant (`CO-single-tenant`): one deployment serves one institution. The t
 
 - **Login:** HTTP Basic (email + password) → server issues a JWT (`AuthController` / `JwtProvider`). Passwords hashed with **BCrypt (strength 12)**.
 - **Tokens:** self-issued JWTs, **RSA-2048** signature, **2-hour** expiry, claims `sub`, `userId`, space-delimited `authorities`. Stateless OAuth2 resource server (`SessionCreationPolicy.STATELESS`).
+- **Active-account validation (designed; pending implementation):** per FR-SEC-active-account and [Student Design](stu.md), bearer authentication composes a current-account lookup by signed `userId` with the existing signature/expiry validation. A missing/invalid id, absent account or disabled student/instructor is refused with 401; unavailable account storage never grants access. This shared check covers performance tracking and RAM, without caching enabled state. The cutoff is requests authenticated after the deactivation commit; already-authenticated requests may finish. Existing Basic login keeps its enabled-account check. No token blocklist/version is added: after restoration an otherwise-valid, unexpired token can work again. The SPA reuses its existing 401 logout handling. This paragraph describes the approved target, not a claim that current code enforces it.
 - **Provisioning:** invitation-gated registration (`user/userinvitation` — `validateUserInvitation` rejects any sign-up without a matching course-admin-issued invitation; see Known gaps); password reset via a one-time token valid **5 minutes**.
-- **Known gaps:** no token **refresh** or **revocation/blocklist** — a token is valid for its full 2h (a leaked token can't be revoked; logout is client-side only). The RSA key regenerates per startup (KD-self-issued-jwt). **`POST /students` and `POST /instructors` are `permitAll()` at the security-filter level, but registration is gated in the service layer**: both paths call `validateUserInvitation`, which rejects any registration lacking a course-admin-issued, single-use invitation whose email, token, role, course, and section all match (invitations are created via UC-STU-invite-students / UC-INS-invite-instructors). So account creation is **not** open self-registration — a stranger cannot self-provision, and an instructor account requires an *instructor* invitation. The residual concern is defense-in-depth: the only gate is service-layer (there is no filter-chain authorization rule), and the endpoint is unauthenticated and unthrottled (rate limiting is [TD-auth-rate-limit](#risks-and-technical-debt)).
+- **Known gaps:** no token **refresh** or **revocation/blocklist** — current code accepts an otherwise-valid token for its full 2h (a leaked token cannot be individually revoked; logout is client-side only). The designed active-account check above closes disabled-account access once implemented, but does not add per-token revocation. The RSA key regenerates per startup (KD-self-issued-jwt). **`POST /students` and `POST /instructors` are `permitAll()` at the security-filter level, but registration is gated in the service layer**: both paths call `validateUserInvitation`, which rejects any registration lacking a course-admin-issued, single-use invitation whose email, token, role, course, and section all match (invitations are created via UC-STU-invite-students / UC-INS-invite-instructors). So account creation is **not** open self-registration — a stranger cannot self-provision, and an instructor account requires an *instructor* invitation. The residual concern is defense-in-depth: the only gate is service-layer (there is no filter-chain authorization rule), and the endpoint is unauthenticated and unthrottled (rate limiting is [TD-auth-rate-limit](#risks-and-technical-debt)).
 
 #### **Authorization**
 
