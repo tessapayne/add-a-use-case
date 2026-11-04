@@ -1,6 +1,9 @@
 package team.projectpulse.security;
 
 import org.springframework.dao.DataAccessException;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.transaction.TransactionSystemException;
+import org.springframework.transaction.TransactionTimedOutException;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
@@ -36,7 +39,7 @@ public class ActiveAccountValidator implements OAuth2TokenValidator<Jwt> {
         try {
             return this.userRepository.findById(userId).filter(user -> user.isEnabled()).isPresent()
                     ? OAuth2TokenValidatorResult.success() : invalidAccount();
-        } catch (DataAccessException ex) {
+        } catch (DataAccessException | CannotCreateTransactionException | TransactionSystemException | TransactionTimedOutException ex) {
             // A validator reports an OAuth error; the entry point maps this one to a generic retryable 503.
             return OAuth2TokenValidatorResult.failure(new OAuth2Error(ACCOUNT_STORE_UNAVAILABLE,
                     "Account verification is temporarily unavailable. Please try again.", null));

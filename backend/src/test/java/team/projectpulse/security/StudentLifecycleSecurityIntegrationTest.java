@@ -4,6 +4,7 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.jwt.*;
@@ -85,15 +86,18 @@ class StudentLifecycleSecurityIntegrationTest extends AbstractIntegrationTest {
         verify(service,never()).findStudentById(anyInt());
     }
 
-    @Test
-    void unavailableAccountStoreReturnsGeneric503WithoutProtectedLogic() throws Exception {
+    @ParameterizedTest
+    @MethodSource("team.projectpulse.security.ActiveAccountValidatorTest#infrastructureFailures")
+    void unavailableAccountStoreReturnsGeneric503WithoutProtectedLogic(RuntimeException failure) throws Exception {
         String token = login("j.smith@abc.edu");
         clearInvocations(service);
-        doThrow(new DataAccessResourceFailureException("SECRET database URL")).when(users).findById(4);
+        doThrow(failure).when(users).findById(4);
         mvc.perform(get("/api/v1/students/4").header("Authorization",token))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.flag").value(false))
                 .andExpect(jsonPath("$.code").value(503))
-                .andExpect(jsonPath("$.message").value("Account verification is temporarily unavailable. Please try again."));
+                .andExpect(jsonPath("$.message").value("Account verification is temporarily unavailable. Please try again."))
+                .andExpect(jsonPath("$.data").isEmpty())
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SECRET"))));
         verify(service,never()).findStudentById(anyInt());
     }
 

@@ -8,6 +8,9 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.transaction.TransactionSystemException;
+import org.springframework.transaction.TransactionTimedOutException;
 import org.springframework.security.oauth2.jwt.Jwt;
 import team.projectpulse.student.Student;
 import team.projectpulse.user.UserRepository;
@@ -79,13 +82,21 @@ class ActiveAccountValidatorTest {
         verify(users).findById(Integer.MAX_VALUE);
     }
 
-    @Test
-    void outageProducesDistinctGenericError() {
-        given(users.findById(1)).willThrow(new DataAccessResourceFailureException("secret database address"));
+    static Stream<RuntimeException> infrastructureFailures() {
+        return Stream.of(new DataAccessResourceFailureException("SECRET database address"),
+                new CannotCreateTransactionException("SECRET transaction-start details"),
+                new TransactionSystemException("SECRET transaction infrastructure"),
+                new TransactionTimedOutException("SECRET transaction timeout"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("infrastructureFailures")
+    void outageProducesDistinctGenericError(RuntimeException failure) {
+        given(users.findById(1)).willThrow(failure);
         var result = validator.validate(token(1, Instant.now().plusSeconds(300)));
         assertThat(result.getErrors()).singleElement().satisfies(error -> {
             assertThat(error.getErrorCode()).isEqualTo(ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE);
-            assertThat(error.getDescription()).doesNotContain("secret");
+            assertThat(error.getDescription()).isEqualTo("Account verification is temporarily unavailable. Please try again.");
         });
     }
 
