@@ -62,7 +62,7 @@
               v-model="
                 row.ratings.find((r: Rating) => r.criterionId === criterion.criterionId).actualScore
               "
-              :disabled="isLoading || recoveryRequired"
+              :disabled="isLoading || recoveryRequired || !initializationComplete"
               :min="0"
               :max="criterion.maxScore"
               :step="1"
@@ -85,7 +85,7 @@
         <template #default="{ row }">
           <el-input
             v-model="row.publicComment"
-            :disabled="isLoading || recoveryRequired"
+            :disabled="isLoading || recoveryRequired || !initializationComplete"
             type="textarea"
             :rows="5"
             placeholder="Enter public comment"
@@ -107,7 +107,7 @@
         <template #default="{ row }">
           <el-input
             v-model="row.privateComment"
-            :disabled="isLoading || recoveryRequired"
+            :disabled="isLoading || recoveryRequired || !initializationComplete"
             type="textarea"
             :rows="5"
             placeholder="Enter private comment"
@@ -127,7 +127,13 @@
         type="primary"
         @click="savePeerEvaluations"
         :loading="isLoading"
-        :disabled="isLoading || recoveryRequired || !peerEvalutions.length"
+        :disabled="
+          loading ||
+          isLoading ||
+          recoveryRequired ||
+          !initializationComplete ||
+          !peerEvalutions.length
+        "
       >
         {{ isNewSubmission ? 'Submit' : 'Update' }}
       </el-button>
@@ -163,6 +169,7 @@ const recoveryRequired = ref(false)
 const recoveryWarning = ref('')
 const isNewSubmission = computed(() => peerEvalutions.value.some((row) => !row.evaluationId))
 const criteria = ref<Criterion[]>([])
+const initializationComplete = ref(false)
 const userInfoStore = useUserInfoStore()
 const student = computed(() => userInfoStore.userInfo as Student)
 let confirmationOwed = false
@@ -183,6 +190,19 @@ function candidate(recipient: Student): Draft {
     privateComment: '',
     outcome: 'unsaved'
   }
+}
+
+// Retry the full section/rubric dependency chain unless it completed successfully.
+async function ensureInitialized() {
+  if (initializationComplete.value) return
+  const section = await findSectionById(student.value.sectionId!)
+  if (!section.flag || !section.data?.rubricId)
+    throw new Error('The course section rubric is unavailable.')
+  const rubric = await findRubricById(section.data.rubricId)
+  if (!rubric.flag || !rubric.data?.criteria?.length)
+    throw new Error('The evaluation rubric is unavailable.')
+  criteria.value = rubric.data.criteria
+  initializationComplete.value = true
 }
 
 // Reconcile by persisted ID and logical identity. Never discard drafts when either recovery read fails.
@@ -236,9 +256,7 @@ onMounted(async () => {
   }
   loading.value = true
   try {
-    const section = await findSectionById(student.value.sectionId!)
-    const rubric = await findRubricById(section.data.rubricId!)
-    criteria.value = rubric.data.criteria || []
+    await ensureInitialized()
     await reconcile()
     recoveryWarning.value = ''
   } catch {
@@ -253,6 +271,7 @@ async function recoverOnly() {
   if (isLoading.value) return
   isLoading.value = true
   try {
+    await ensureInitialized()
     await reconcile()
   } catch {
     recoveryWarning.value =
@@ -264,7 +283,14 @@ async function recoverOnly() {
 }
 
 async function savePeerEvaluations() {
-  if (isLoading.value || recoveryRequired.value || !peerEvalutions.value.length) return
+  if (
+    loading.value ||
+    isLoading.value ||
+    recoveryRequired.value ||
+    !initializationComplete.value ||
+    !peerEvalutions.value.length
+  )
+    return
   isLoading.value = true
   recoveryWarning.value = ''
   confirmationOwed ||= isNewSubmission.value

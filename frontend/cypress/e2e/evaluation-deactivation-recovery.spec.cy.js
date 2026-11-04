@@ -15,16 +15,32 @@ const row = (id, recipient, comment = 'saved') => ({
   publicComment: comment,
   privateComment: ''
 })
-function visit(rows = [], members = roster) {
+function visit(rows = [], members = roster, initialFailure) {
   cy.clock(Date.UTC(2023, 7, 20, 16), ['Date'])
-  cy.intercept('GET', '**/sections/2', ok({ rubricId: 1 })).as('section')
-  cy.intercept(
-    'GET',
-    '**/rubrics/1',
-    ok({
-      criteria: [{ criterionId: 1, criterion: 'Quality', description: 'Quality', maxScore: 10 }]
-    })
-  )
+  let sectionCalls = 0
+  let rubricCalls = 0
+  cy.intercept('GET', '**/sections/2', (req) => {
+    if (initialFailure === 'section' && ++sectionCalls === 1)
+      req.reply({
+        statusCode: 500,
+        body: { flag: false, code: 500, message: 'Section unavailable' }
+      })
+    else req.reply(ok({ rubricId: 1 }))
+  }).as('section')
+  cy.intercept('GET', '**/rubrics/1', (req) => {
+    if (initialFailure === 'rubric' && ++rubricCalls === 1)
+      req.reply({
+        statusCode: 500,
+        body: { flag: false, code: 500, message: 'Rubric unavailable' }
+      })
+    else
+      req.reply({
+        delay: initialFailure ? 800 : 0,
+        body: ok({
+          criteria: [{ criterionId: 1, criterion: 'Quality', description: 'Quality', maxScore: 10 }]
+        })
+      })
+  }).as('rubric')
   cy.intercept('GET', '**/students/teams/1', ok(members)).as('roster')
   cy.intercept('GET', '**/evaluations/evaluators/4/week/*', ok(rows)).as('stored')
   cy.intercept('POST', '**/evaluations/weeks/*/receipt', ok(null)).as('receipt')
@@ -40,10 +56,34 @@ function visit(rows = [], members = roster) {
       }
     })
   })
-  cy.wait('@stored')
+  cy.wait(initialFailure ? '@' + initialFailure : '@stored')
 }
 
 describe('Evaluation recipient lifecycle and independent outcomes', () => {
+  for (const stage of ['section', 'rubric']) {
+    it(`retries incomplete ${stage} initialization before enabling submission (review R2)`, () => {
+      visit([], roster, stage)
+      cy.get('[data-cy=evaluation-recovery]').should('contain', 'could not be loaded')
+      cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+      cy.get('@stored.all').should('have.length', 0)
+      cy.get('@roster.all').should('have.length', 0)
+      cy.get('[data-cy=evaluation-reload]').click()
+      cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+      cy.wait('@stored')
+      cy.get('[data-cy=evaluation-submit]').should('be.enabled')
+      cy.get('.el-table__body tr').should('have.length', 2)
+      cy.get('.el-table__body tr').first().find('input').should('have.value', '10')
+      cy.intercept('POST', '**/evaluations', (req) =>
+        req.reply(ok({ ...req.body, evaluationId: 100 + req.body.evaluateeId }))
+      ).as('initializedCreate')
+      cy.get('[data-cy=evaluation-submit]').click()
+      cy.wait('@initializedCreate')
+        .its('request.body.ratings')
+        .should('deep.equal', [{ criterionId: 1, criterion: 'Quality', actualScore: 10 }])
+      cy.wait('@receipt')
+    })
+  }
+
   it('offers active new recipients and preserves saved inactive-recipient edits (T-recipient/T-edit)', () => {
     visit([row(10, 6)])
     cy.get('.el-table__body')
