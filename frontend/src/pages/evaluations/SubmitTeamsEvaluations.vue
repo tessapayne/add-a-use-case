@@ -143,6 +143,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { isAxiosError } from 'axios'
 import { findStudentsByTeamId } from '@/apis/student'
 import type { Student } from '@/apis/student/types'
 import { findSectionById } from '@/apis/section'
@@ -159,7 +160,7 @@ import {
 import { ElMessage } from 'element-plus'
 import type { PeerEvaluation, Rating } from '@/apis/evaluation/types'
 
-type Draft = PeerEvaluation & { outcome?: 'saved' | 'unsaved' | 'unknown' }
+type Draft = PeerEvaluation & { outcome?: 'saved' | 'unsaved' | 'rejected' | 'unknown' }
 const previousWeek = ref('')
 const previousWeekRange = ref('')
 const peerEvalutions = ref<Draft[]>([])
@@ -221,7 +222,7 @@ async function reconcile() {
     const saved = (draft.evaluationId && byId.get(draft.evaluationId)) || byIdentity.get(key(draft))
     if (saved)
       merged.push({ ...saved, ...draft, evaluationId: saved.evaluationId, outcome: 'saved' })
-    else if (draft.evaluationId) {
+    else if (draft.evaluationId || draft.outcome === 'unknown') {
       merged.push(draft)
       unresolved = true
     } else if (active.some((recipient) => recipient.id === draft.evaluateeId))
@@ -237,14 +238,20 @@ async function reconcile() {
   }
   peerEvalutions.value = merged
   recoveryRequired.value = unresolved
+  const notices: string[] = []
   if (removed)
-    recoveryWarning.value = `${removed} unsaved evaluation(s) removed because the recipient is inactive. Active drafts and saved evaluations were retained.`
-  else if (unresolved)
-    recoveryWarning.value =
-      'A saved evaluation could not be reconciled. Drafts are retained; reload before retrying.'
+    notices.push(
+      `${removed} unsaved evaluation(s) removed because the recipient is inactive. Active drafts and saved evaluations were retained.`
+    )
+  if (unresolved)
+    notices.push(
+      'Some submission outcomes are still unknown. Drafts are retained; retry recovery before submitting.'
+    )
   else
-    recoveryWarning.value =
+    notices.push(
       'Current recipients and saved evaluations loaded. Review your retained drafts before retrying.'
+    )
+  recoveryWarning.value = notices.join(' ')
 }
 
 onMounted(async () => {
@@ -308,7 +315,15 @@ async function savePeerEvaluations() {
     if (outcomes.some((outcome) => outcome.status === 'rejected')) {
       outcomes.forEach((outcome, index) => {
         const row = rows[index]
-        if (row && outcome.status === 'rejected') row.outcome = 'unknown'
+        if (row && outcome.status === 'rejected') {
+          // A validation/permission refusal establishes non-creation; timeouts, gateway and server
+          // failures do not. In particular, HTTP 408 is not a definitive rejection.
+          const status = isAxiosError(outcome.reason) ? outcome.reason.response?.status : undefined
+          row.outcome =
+            status !== undefined && [400, 401, 403, 404, 409, 422].includes(status)
+              ? 'rejected'
+              : 'unknown'
+        }
       })
       recoveryRequired.value = true
       try {

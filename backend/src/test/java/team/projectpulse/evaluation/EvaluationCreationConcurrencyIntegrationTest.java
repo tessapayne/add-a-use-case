@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +25,8 @@ import java.util.UUID;
 import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.ArgumentMatchers.any;
 
 /** UC-STU-deactivate-student T-create-overlap; real MySQL transactions, never rollback-only base tests. */
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -32,7 +35,7 @@ class EvaluationCreationConcurrencyIntegrationTest extends AbstractIntegrationTe
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired StudentRepository students;
     @Autowired SectionRepository sections;
-    @Autowired PeerEvaluationRepository evaluations;
+    @MockitoSpyBean PeerEvaluationRepository evaluations;
     @Autowired EvaluationService service;
     @Autowired EntityManager entityManager;
     @Autowired Clock clock;
@@ -79,6 +82,49 @@ class EvaluationCreationConcurrencyIntegrationTest extends AbstractIntegrationTe
     @Test
     void overlappingCreateSucceedsAfterFirstWriterRollsBack() throws Exception {
         exerciseOverlap(true);
+    }
+
+    @Test
+    void timedOutOriginalCanCommitAfterInactiveRecipientAndEmptyRecoveryRead() throws Exception {
+        CountDownLatch validatedBeforeInsert = new CountDownLatch(1);
+        CountDownLatch releaseOriginal = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            // Creation already passed the active-recipient check; pause before its IDENTITY insert.
+            validatedBeforeInsert.countDown();
+            await(releaseOriginal);
+            // Persist the transient entity through the real JPA transaction after releasing the test gate.
+            // A Spring Data interface spy has no concrete save() method for callRealMethod().
+            PeerEvaluation evaluation = invocation.getArgument(0);
+            entityManager.persist(evaluation);
+            return evaluation;
+        }).when(evaluations).save(any(PeerEvaluation.class));
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            Future<?> original = worker.submit(() -> transaction.executeWithoutResult(status ->
+                    create(fixtureIds.get(1), "original draft retained through timeout")));
+            try {
+                assertThat(validatedBeforeInsert.await(15, TimeUnit.SECONDS)).isTrue();
+                // A caller timing out must not cancel the server transaction.
+                assertThatThrownBy(() -> original.get(300, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+                transaction.executeWithoutResult(status -> students.findById(fixtureIds.get(1)).orElseThrow().setEnabled(false));
+                transaction.executeWithoutResult(status -> {
+                    assertThat(students.findById(fixtureIds.get(1)).orElseThrow().isEnabled()).isFalse();
+                    assertThat(evaluations.findByWeekAndEvaluatorId(week, fixtureIds.get(0))).isEmpty();
+                });
+                // The empty recovery read did not establish failure: the original can still commit.
+                releaseOriginal.countDown();
+                original.get(15, TimeUnit.SECONDS);
+                transaction.executeWithoutResult(status -> {
+                    assertThat(evaluations.findByWeekAndEvaluatorId(week, fixtureIds.get(0)))
+                            .singleElement().satisfies(saved -> {
+                                assertThat(saved.getPeerEvaluationId()).isNotNull();
+                                assertThat(saved.getEvaluatee().getId()).isEqualTo(fixtureIds.get(1));
+                                assertThat(saved.getPublicComment()).isEqualTo("original draft retained through timeout");
+                            });
+                });
+            } finally {
+                releaseOriginal.countDown();
+            }
+        }
     }
 
     private void exerciseOverlap(boolean rollbackFirst) throws Exception {

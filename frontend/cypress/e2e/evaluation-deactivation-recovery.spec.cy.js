@@ -172,11 +172,76 @@ describe('Evaluation recipient lifecycle and independent outcomes', () => {
     cy.get('@receipt.all').should('have.length', 0)
     cy.intercept('GET', '**/students/teams/1', ok(roster))
     cy.get('[data-cy=evaluation-reload]').click()
+    cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+    cy.get('[data-cy=evaluation-recovery]').should('contain', 'outcomes are still unknown')
+    cy.get('@unknown.all').should('have.length', 2)
+    // Only a positive stored outcome resolves the unknown rows; an empty read did not.
+    cy.intercept('GET', '**/evaluations/evaluators/4/week/*', ok([row(14, 4), row(15, 5)]))
+    cy.get('[data-cy=evaluation-reload]').click()
     cy.get('[data-cy=evaluation-submit]').should('be.enabled')
     cy.get('.el-table__body tr')
       .first()
       .find('textarea')
       .first()
       .should('have.value', 'recover this draft')
+  })
+
+  it('retains an inactive unresolved draft after timeout and empty read, then attaches the late commit ID (review R3)', () => {
+    visit(
+      [],
+      roster.map((member) => ({ ...member, enabled: true }))
+    )
+    cy.get('.el-table__body tr').eq(2).find('textarea').first().type('keep this unresolved draft')
+    let committed = false
+    let originalDraft
+    cy.intercept('POST', '**/evaluations', (req) => {
+      if (req.body.evaluateeId === 6) {
+        originalDraft = req.body
+        req.reply({ delay: 11000, body: ok({ ...req.body, evaluationId: 16 }) })
+      } else req.reply(ok({ ...req.body, evaluationId: req.body.evaluateeId === 4 ? 14 : 15 }))
+    }).as('originalCreates')
+    cy.intercept('GET', '**/students/teams/1', ok(roster))
+    cy.intercept('GET', '**/evaluations/evaluators/4/week/*', (req) => {
+      const stored = [row(14, 4), row(15, 5)]
+      if (committed) stored.push({ ...originalDraft, evaluationId: 16 })
+      req.reply(ok(stored))
+    }).as('recoveryRead')
+    cy.get('[data-cy=evaluation-submit]').click()
+    cy.get('[data-cy=evaluation-recovery]', { timeout: 15000 }).should(
+      'contain',
+      'outcomes are still unknown'
+    )
+    cy.get('.el-table__body tr').should('have.length', 3)
+    cy.get('.el-table__body tr')
+      .eq(2)
+      .find('textarea')
+      .first()
+      .should('have.value', 'keep this unresolved draft')
+    cy.get('[data-cy=evaluation-submit]').should('be.disabled').click({ force: true })
+    cy.get('@originalCreates.all').should('have.length', 3)
+    cy.get('@receipt.all').should('have.length', 0)
+    cy.get('[data-cy=evaluation-reload]').click()
+    cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+    cy.get('.el-table__body tr').should('have.length', 3)
+    // Release the simulated original commit after the empty recovery read, as in the MySQL regression.
+    cy.then(() => {
+      committed = true
+    })
+    cy.get('[data-cy=evaluation-reload]').click()
+    cy.get('[data-cy=evaluation-submit]').should('be.enabled')
+    cy.get('.el-table__body tr')
+      .eq(2)
+      .find('textarea')
+      .first()
+      .should('have.value', 'keep this unresolved draft')
+    cy.intercept('PUT', '**/evaluations/*', (req) => req.reply(ok(req.body))).as('knownEdits')
+    cy.get('[data-cy=evaluation-submit]').click()
+    cy.get('@knownEdits.all').should('have.length', 3)
+    cy.get('@knownEdits.all').then((calls) => {
+      const savedInactive = calls.find((call) => call.request.url.endsWith('/16'))
+      expect(savedInactive.request.body.publicComment).to.eq('keep this unresolved draft')
+    })
+    cy.get('@originalCreates.all').should('have.length', 3)
+    cy.wait('@receipt')
   })
 })
