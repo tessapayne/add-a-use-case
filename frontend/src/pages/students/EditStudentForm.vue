@@ -14,13 +14,12 @@
       <el-input v-model="studentBeingEdited.username"></el-input>
     </el-form-item>
     <el-form-item label="Status:" prop="enabled">
-      <el-switch
-        v-model="studentBeingEdited.enabled"
-        inline-prompt
-        active-text="Enabled"
-        inactive-text="Disabled"
-        style="--el-switch-on-color: #13ce66; --el-switch-off-color: #ff4949"
-      />
+      <el-tag
+        data-cy="student-profile-status"
+        :type="studentBeingEdited.enabled ? 'success' : 'danger'"
+      >
+        {{ studentBeingEdited.enabled ? 'Active' : 'Inactive' }}
+      </el-tag>
     </el-form-item>
     <el-form-item label="First Name:" prop="firstName">
       <el-input v-model="studentBeingEdited.firstName"></el-input>
@@ -35,14 +34,30 @@
       <el-input v-model="studentBeingEdited.teamName" disabled></el-input>
     </el-form-item>
     <div style="display: flex; justify-content: end">
-      <el-button @click="$emit('close-dialog')"> Cancel </el-button>
-      <el-button type="primary" @click="updateExistingStudent()"> Confirm </el-button>
+      <el-button :disabled="saving" @click="$emit('close-dialog')"> Cancel </el-button>
+      <el-button
+        data-cy="student-profile-save"
+        type="primary"
+        :disabled="saving"
+        :loading="saving"
+        @click="updateExistingStudent()"
+        >Save changes</el-button
+      >
+      <el-button
+        v-if="studentBeingEdited.enabled === false && (userInfo.isInstructor || userInfo.isAdmin)"
+        data-cy="student-restore"
+        type="warning"
+        :disabled="saving"
+        @click="updateExistingStudent(true)"
+        >Save changes and reactivate</el-button
+      >
     </div>
   </el-form>
 </template>
 
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { useUserInfoStore } from '@/stores/userInfo'
 import type { Student } from '@/apis/student/types'
 import type { FormInstance } from 'element-plus'
 import { findStudentById, updateStudent } from '@/apis/student'
@@ -50,6 +65,8 @@ import { ref, onMounted } from 'vue'
 
 const { studentId } = defineProps(['studentId'])
 const emit = defineEmits(['close-dialog'])
+const saving = ref(false)
+const userInfo = useUserInfoStore()
 
 // Note that the structure of the userData is NOT the same as the User interface since the roles are stored as an array
 const studentBeingEdited = ref<Student>({
@@ -74,7 +91,6 @@ const rules = {
       trigger: 'blur'
     }
   ],
-  enabled: [{ required: true, message: 'Please select the status of the user.', trigger: 'blur' }],
   firstName: [
     { required: true, message: 'Please provide the first name of the user.', trigger: 'blur' }
   ],
@@ -101,26 +117,41 @@ async function loadStudent(studentId: number) {
 }
 
 onMounted(() => {
-  loadStudent(studentId) // Load the artifact to be edited
+  loadStudent(studentId).catch(() => {})
 })
 
-async function updateExistingStudent() {
-  await studentForm.value!.validate() // Validate the form
-
-  const updatedStudent: Student = {
-    id: studentBeingEdited.value.id,
-    username: studentBeingEdited.value.username,
-    enabled: studentBeingEdited.value.enabled,
-    firstName: studentBeingEdited.value.firstName,
-    lastName: studentBeingEdited.value.lastName,
-    email: studentBeingEdited.value.email
+async function updateExistingStudent(reactivate = false) {
+  if (saving.value) return
+  saving.value = true
+  try {
+    await studentForm.value!.validate()
+    if (reactivate) {
+      try {
+        await ElMessageBox.confirm(
+          "Save these profile changes and restore this student's access?",
+          'Reactivate student',
+          {
+            confirmButtonText: 'Save changes and reactivate',
+            cancelButtonText: 'Cancel',
+            type: 'warning'
+          }
+        )
+      } catch {
+        return
+      }
+    }
+    const result = await updateStudent({ ...studentBeingEdited.value }, reactivate)
+    if (!result.flag) throw new Error(result.message)
+    studentBeingEdited.value = result.data
+    ElMessage.success(
+      reactivate ? 'Student profile saved and access restored' : 'Student updated successfully'
+    )
+    emit('close-dialog')
+  } catch {
+    /* Validation keeps the draft; shared client reports request errors. */
+  } finally {
+    saving.value = false
   }
-  console.log(updatedStudent)
-  // Call the API to update the user
-  await updateStudent(updatedStudent)
-
-  ElMessage.success('Student updated successfully')
-  emit('close-dialog')
 }
 </script>
 

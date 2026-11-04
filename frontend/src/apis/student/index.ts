@@ -31,11 +31,15 @@ export const findStudentsByTeamId = (teamId: number) =>
 export const createStudent = (newStudent: Student, params: RegistrationParams) =>
   request.post<any, CreateStudentResponse>(API.STUDENTS_ENDPOINT, newStudent, { params })
 
-export const updateStudent = (updatedStudent: Student) =>
+export const updateStudent = (updatedStudent: Student, reactivate = false) =>
   request.put<any, UpdateStudentResponse>(
     `${API.STUDENTS_ENDPOINT}/${updatedStudent.id}`,
-    updatedStudent
+    updatedStudent,
+    { params: reactivate ? { reactivate: true } : undefined }
   )
 
 export const deleteStudent = (id: number) =>
   request.delete<any, DeleteStudentResponse>(`${API.STUDENTS_ENDPOINT}/${id}`)
+
+export const deactivateStudent = (id: number) =>
+  request.post<any, UpdateStudentResponse>(`${API.STUDENTS_ENDPOINT}/${id}/deactivate`)

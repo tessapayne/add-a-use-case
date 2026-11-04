@@ -35,19 +35,28 @@
       <el-table-column label="Team" prop="teamName"></el-table-column>
       <el-table-column label="Status" prop="enabled">
         <template #default="{ row }">
-          <el-tag type="success" v-if="row.enabled">Enabled</el-tag>
-          <el-tag type="danger" v-else>Disabled</el-tag>
+          <el-tag type="success" v-if="row.enabled">Active</el-tag>
+          <el-tag type="danger" v-else>Inactive</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Operations" width="120">
+      <el-table-column label="Operations" width="230">
         <template #default="{ row }">
           <el-button
             icon="Edit"
+            aria-label="Edit student"
             circle
             plain
             type="primary"
             @click.stop="showEditStudentDialog(row)"
           ></el-button>
+          <el-button
+            v-if="userInfo.isInstructor || userInfo.isAdmin"
+            data-cy="deactivate-open"
+            type="danger"
+            plain
+            @click.stop="openDeactivation(row)"
+            >Deactivate</el-button
+          >
         </template>
       </el-table-column>
       <template #empty>
@@ -73,12 +82,77 @@
         @close-dialog="closeDialog"
       ></EditStudentForm>
     </el-dialog>
+    <el-alert
+      v-if="refreshWarning"
+      :title="refreshWarning"
+      type="warning"
+      show-icon
+      :closable="false"
+      data-cy="student-refresh-warning"
+    />
+    <el-dialog
+      v-model="deactivationVisible"
+      title="Deactivate student"
+      width="520px"
+      data-cy="deactivate-dialog"
+      :show-close="!deactivating"
+      :close-on-click-modal="!deactivating"
+      :close-on-press-escape="!deactivating"
+    >
+      <template v-if="deactivationTarget">
+        <p>
+          <strong>{{ deactivationTarget.firstName }} {{ deactivationTarget.lastName }}</strong> ({{
+            deactivationTarget.email
+          }})
+        </p>
+        <p>
+          Course section: {{ deactivationTarget.sectionName }} · Team:
+          {{ deactivationTarget.teamName || 'No team' }} · Status:
+          {{ deactivationTarget.enabled ? 'Active' : 'Inactive' }}
+        </p>
+        <p>
+          This student will lose access to Project Pulse, including submitting weekly activity
+          reports and peer evaluations. New peer evaluations cannot target this student.
+        </p>
+        <p>
+          Course enrollment, team membership, submitted work, existing evaluations and historical
+          scores will be retained. Access can be restored later.
+        </p>
+        <el-alert
+          v-if="deactivationError"
+          :title="deactivationError"
+          type="error"
+          :closable="false"
+          data-cy="deactivate-error"
+        />
+      </template>
+      <template #footer>
+        <el-button
+          data-cy="deactivate-cancel"
+          :disabled="deactivating"
+          @click="deactivationVisible = false"
+          >Cancel</el-button
+        >
+        <el-button v-if="deactivationError" :disabled="deactivating" @click="reloadDeactivation"
+          >Reload current state</el-button
+        >
+        <el-button
+          data-cy="deactivate-confirm"
+          type="danger"
+          :loading="deactivating"
+          :disabled="deactivating"
+          @click="confirmDeactivation"
+          >Deactivate student</el-button
+        >
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { searchStudents } from '@/apis/student'
+import { searchStudents, findStudentById, deactivateStudent } from '@/apis/student'
+import { useUserInfoStore } from '@/stores/userInfo'
 import type {
   SearchStudentByCriteriaResponse,
   Student,
@@ -97,6 +171,13 @@ const searchCriteria = ref<StudentSearchCriteria>({
 const students = ref<Student[]>([]) // Array of loaded students
 const loading = ref<boolean>(true) // Loading status
 const settingsStore = useSettingsStore()
+const userInfo = useUserInfoStore()
+const deactivationVisible = ref(false)
+const deactivationTarget = ref<Student>()
+const deactivating = ref(false)
+const deactivationError = ref('')
+const refreshWarning = ref('')
+let loadRequest = 0
 
 // Pagination information
 const pageNumber = ref<number>(1) // current page number, starting from 1
@@ -110,23 +191,70 @@ onMounted(() => {
     ElMessage.error('Please select a section in the Sections page.')
     return
   }
-  loadStudents()
+  loadStudents().catch(() => {})
 })
 
 async function loadStudents() {
+  const requestId = ++loadRequest
   loading.value = true
-  // On the back end, the page number starts from 0, so subtract 1 here
-  const result: SearchStudentByCriteriaResponse = await searchStudents(
-    { page: pageNumber.value - 1, size: pageSize.value },
-    searchCriteria.value
-  )
-  students.value = result.data.content
+  try {
+    const result: SearchStudentByCriteriaResponse = await searchStudents(
+      { page: pageNumber.value - 1, size: pageSize.value },
+      searchCriteria.value
+    )
+    if (requestId !== loadRequest) return
+    students.value = result.data.content
+    pageNumber.value = result.data.number + 1
+    pageSize.value = result.data.size
+    totalElements.value = result.data.totalElements
+  } finally {
+    if (requestId === loadRequest) loading.value = false
+  }
+}
 
-  // Update pagination information
-  pageNumber.value = result.data.number + 1 // The page number starts from 0 on the back end, so add 1 here
-  pageSize.value = result.data.size
-  totalElements.value = result.data.totalElements
-  loading.value = false
+async function openDeactivation(student: Student) {
+  if (deactivating.value) return
+  try {
+    const result = await findStudentById(student.id!)
+    deactivationTarget.value = result.data
+    deactivationError.value = ''
+    deactivationVisible.value = true
+  } catch {
+    /* Shared client displays the lookup refusal. */
+  }
+}
+
+async function reloadDeactivation() {
+  if (deactivationTarget.value) await openDeactivation(deactivationTarget.value)
+}
+
+async function confirmDeactivation() {
+  if (deactivating.value || !deactivationTarget.value) return
+  deactivating.value = true
+  deactivationError.value = ''
+  refreshWarning.value = ''
+  try {
+    const result = await deactivateStudent(deactivationTarget.value.id!)
+    if (!result.flag) throw new Error(result.message)
+    ++loadRequest // Invalidate roster reads that began before acknowledgement.
+    const row = students.value.find((student) => student.id === result.data.id)
+    if (row) Object.assign(row, result.data)
+    deactivationTarget.value = result.data
+    deactivationVisible.value = false
+    ElMessage.success('Student deactivated successfully')
+    try {
+      await loadStudents()
+    } catch {
+      refreshWarning.value =
+        'Student deactivated. The list could not be refreshed; try refreshing again.'
+    }
+  } catch {
+    deactivationError.value =
+      'Deactivation was not acknowledged. Reload the current state or retry; the request may already have succeeded.'
+  } finally {
+    deactivating.value = false
+    loading.value = false
+  }
 }
 
 function resetSearchCriteria() {
@@ -135,18 +263,18 @@ function resetSearchCriteria() {
     firstName: '',
     lastName: ''
   }
-  loadStudents()
+  loadStudents().catch(() => {})
 }
 
 function handlePageNumberChange(newPageNumer: number) {
   pageNumber.value = newPageNumer // Not necessary since pageNumber already has a two-way binding
-  loadStudents()
+  loadStudents().catch(() => {})
 }
 
 function handlePageSizeChange(newSize: number) {
   pageSize.value = newSize // Not necessary since pageSize already has a two-way binding
   pageNumber.value = 1 // Reset the page number to 1 when the page size changes
-  loadStudents()
+  loadStudents().catch(() => {})
 }
 
 // Dialog for adding or editing artifacts
@@ -161,7 +289,7 @@ function showEditStudentDialog(student: Student) {
 
 function closeDialog() {
   dialogVisible.value = false
-  loadStudents()
+  loadStudents().catch(() => {})
 }
 
 import { useRouter } from 'vue-router'
