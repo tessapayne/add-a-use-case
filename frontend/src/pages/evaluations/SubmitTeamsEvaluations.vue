@@ -1,5 +1,20 @@
 <template>
   <el-card class="page-container">
+    <el-alert
+      v-if="recoveryWarning"
+      :title="recoveryWarning"
+      type="warning"
+      :closable="false"
+      show-icon
+      data-cy="evaluation-recovery"
+    />
+    <el-button
+      v-if="recoveryRequired"
+      data-cy="evaluation-reload"
+      :disabled="isLoading"
+      @click="recoverOnly"
+      >Retry recovery</el-button
+    >
     <template #header>
       <div class="header">
         <span
@@ -47,6 +62,7 @@
               v-model="
                 row.ratings.find((r: Rating) => r.criterionId === criterion.criterionId).actualScore
               "
+              :disabled="isLoading || recoveryRequired"
               :min="0"
               :max="criterion.maxScore"
               :step="1"
@@ -69,6 +85,7 @@
         <template #default="{ row }">
           <el-input
             v-model="row.publicComment"
+            :disabled="isLoading || recoveryRequired"
             type="textarea"
             :rows="5"
             placeholder="Enter public comment"
@@ -90,6 +107,7 @@
         <template #default="{ row }">
           <el-input
             v-model="row.privateComment"
+            :disabled="isLoading || recoveryRequired"
             type="textarea"
             :rows="5"
             placeholder="Enter private comment"
@@ -105,29 +123,27 @@
     <!-- submit button on the right side-->
     <div style="display: flex; justify-content: flex-end">
       <el-button
+        data-cy="evaluation-submit"
         type="primary"
-        @click="submitPeerEvaluations"
-        v-if="isNewSubmission"
+        @click="savePeerEvaluations"
         :loading="isLoading"
-        >Submit</el-button
+        :disabled="isLoading || recoveryRequired || !peerEvalutions.length"
       >
-      <el-button type="warning" @click="updatePeerEvaluations" :loading="isLoading" v-else
-        >Update</el-button
-      >
+        {{ isNewSubmission ? 'Submit' : 'Update' }}
+      </el-button>
     </div>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { findStudentsByTeamId } from '@/apis/student'
-import type { Student, FindStudentByTeamIdResponse } from '@/apis/student/types'
+import type { Student } from '@/apis/student/types'
 import { findSectionById } from '@/apis/section'
 import { findRubricById } from '@/apis/rubric'
-import type { FindRubricByIdResponse, Criterion } from '@/apis/rubric/types'
+import type { Criterion } from '@/apis/rubric/types'
 import { getPreviousWeek, getPreviousWeekRange } from '@/utils/week'
 import { useUserInfoStore } from '@/stores/userInfo'
-import type { FindSectionByIdResponse } from '@/apis/section/types'
 import {
   submitEvaluation,
   getEvaluationsByEvaluatorIdAndWeek,
@@ -135,126 +151,160 @@ import {
   sendPeerEvaluationSubmissionConfirmationEmail
 } from '@/apis/evaluation'
 import { ElMessage } from 'element-plus'
-import type {
-  FetchPeerEvaluationsResponse,
-  PeerEvaluation,
-  Rating,
-  SubmitPeerEvaluationResponse,
-  UpdatePeerEvaluationResponse
-} from '@/apis/evaluation/types'
+import type { PeerEvaluation, Rating } from '@/apis/evaluation/types'
 
-const previousWeek = ref<string>('')
-const previousWeekRange = ref<string>('')
-
-const peerEvalutions = ref<PeerEvaluation[]>()
-
-const loading = ref<boolean>(false)
-
-let isNewSubmission = true // Flag to indicate if this is a new submission or an update
-
-const teamId = ref<number>(NaN) // Team ID of the student
-
-const students = ref<Student[]>([]) // Students on the same team
-const sectionId = ref<number>() // Section ID of the team
-const criteria = ref<Criterion[]>([]) // Criteria used for peer evaluations
+type Draft = PeerEvaluation & { outcome?: 'saved' | 'unsaved' | 'unknown' }
+const previousWeek = ref('')
+const previousWeekRange = ref('')
+const peerEvalutions = ref<Draft[]>([])
+const loading = ref(false)
 const isLoading = ref(false)
+const recoveryRequired = ref(false)
+const recoveryWarning = ref('')
+const isNewSubmission = computed(() => peerEvalutions.value.some((row) => !row.evaluationId))
+const criteria = ref<Criterion[]>([])
+const userInfoStore = useUserInfoStore()
+const student = computed(() => userInfoStore.userInfo as Student)
+let confirmationOwed = false
+const key = (row: PeerEvaluation) => `${row.evaluatorId}/${row.evaluateeId}/${row.week}`
 
-const userInfoStore = useUserInfoStore() // Need team ID to search for students
+function candidate(recipient: Student): Draft {
+  return {
+    week: previousWeek.value,
+    evaluatorId: student.value.id,
+    evaluateeId: recipient.id!,
+    evaluateeName: `${recipient.firstName} ${recipient.lastName}`,
+    ratings: criteria.value.map((criterion) => ({
+      criterionId: criterion.criterionId!,
+      criterion: criterion.criterion,
+      actualScore: Math.min(10, criterion.maxScore)
+    })),
+    publicComment: '',
+    privateComment: '',
+    outcome: 'unsaved'
+  }
+}
 
-// Load data when the component is mounted
+// Reconcile by persisted ID and logical identity. Never discard drafts when either recovery read fails.
+async function reconcile() {
+  const [roster, stored] = await Promise.all([
+    findStudentsByTeamId(student.value.teamId!),
+    getEvaluationsByEvaluatorIdAndWeek(student.value.id!, previousWeek.value)
+  ])
+  const active = roster.data.filter((recipient) => recipient.enabled)
+  const byId = new Map(stored.data.map((row) => [row.evaluationId, row]))
+  const byIdentity = new Map(stored.data.map((row) => [key(row), row]))
+  const merged: Draft[] = []
+  let removed = 0
+  let unresolved = false
+  for (const draft of peerEvalutions.value) {
+    const saved = (draft.evaluationId && byId.get(draft.evaluationId)) || byIdentity.get(key(draft))
+    if (saved)
+      merged.push({ ...saved, ...draft, evaluationId: saved.evaluationId, outcome: 'saved' })
+    else if (draft.evaluationId) {
+      merged.push(draft)
+      unresolved = true
+    } else if (active.some((recipient) => recipient.id === draft.evaluateeId))
+      merged.push({ ...draft, outcome: 'unsaved' })
+    else removed++
+  }
+  for (const saved of stored.data) {
+    if (!merged.some((row) => row.evaluationId === saved.evaluationId || key(row) === key(saved)))
+      merged.push({ ...saved, outcome: 'saved' })
+  }
+  for (const recipient of active) {
+    if (!merged.some((row) => row.evaluateeId === recipient.id)) merged.push(candidate(recipient))
+  }
+  peerEvalutions.value = merged
+  recoveryRequired.value = unresolved
+  if (removed)
+    recoveryWarning.value = `${removed} unsaved evaluation(s) removed because the recipient is inactive. Active drafts and saved evaluations were retained.`
+  else if (unresolved)
+    recoveryWarning.value =
+      'A saved evaluation could not be reconciled. Drafts are retained; reload before retrying.'
+  else
+    recoveryWarning.value =
+      'Current recipients and saved evaluations loaded. Review your retained drafts before retrying.'
+}
+
 onMounted(async () => {
   previousWeek.value = getPreviousWeek()
   previousWeekRange.value = getPreviousWeekRange()
-  teamId.value = (userInfoStore.userInfo as Student).teamId as number
-  if (!teamId.value) {
+  if (!student.value.teamId) {
     ElMessage.error('You have not been assigned a team yet.')
     return
   }
-  await loadStudents()
-  sectionId.value = (userInfoStore.userInfo as Student).sectionId
-  await loadCriteria()
   loading.value = true
-  prepareStartingPeerEvaluations()
-  loading.value = false
+  try {
+    const section = await findSectionById(student.value.sectionId!)
+    const rubric = await findRubricById(section.data.rubricId!)
+    criteria.value = rubric.data.criteria || []
+    await reconcile()
+    recoveryWarning.value = ''
+  } catch {
+    recoveryRequired.value = true
+    recoveryWarning.value = 'Evaluations could not be loaded. Retry recovery before submitting.'
+  } finally {
+    loading.value = false
+  }
 })
 
-// Load activities based on the search criteria
-async function loadStudents() {
-  // On the back end, the page number starts from 0, so subtract 1 here
-  const result: FindStudentByTeamIdResponse = await findStudentsByTeamId(teamId.value)
-  students.value = result.data
-}
-
-// Load criteria information
-async function loadCriteria() {
-  const sectionResult: FindSectionByIdResponse = await findSectionById(sectionId.value as number)
-  const rubricResult: FindRubricByIdResponse = await findRubricById(
-    sectionResult.data.rubricId as number
-  )
-  criteria.value = rubricResult.data.criteria!
-}
-
-// Create starting peer evaluations
-async function prepareStartingPeerEvaluations() {
-  // Get the evaluations for the current week
-  const result: FetchPeerEvaluationsResponse = await getEvaluationsByEvaluatorIdAndWeek(
-    (userInfoStore.userInfo as Student).id as number,
-    previousWeek.value
-  )
-
-  // If the student has already submitted evaluations for the current week, load them
-  if (result.data.length > 0) {
-    peerEvalutions.value = result.data
-    isNewSubmission = false
-  } else {
-    // If not, create a new set of evaluations
-    isNewSubmission = true
-    peerEvalutions.value = students.value.map((student) => ({
-      week: previousWeek.value,
-      evaluatorId: (userInfoStore.userInfo as Student).id as number,
-      evaluateeId: student.id as number,
-      evaluateeName: `${student.firstName} ${student.lastName}`,
-      ratings: criteria.value.map((criterion) => ({
-        criterionId: criterion.criterionId as number,
-        criterion: criterion.criterion,
-        actualScore: 10 // Default score, can be changed by the user
-      })),
-      publicComment: '',
-      privateComment: ''
-    }))
-  }
-}
-
-// Submit peer evaluations
-async function submitPeerEvaluations() {
-  if (peerEvalutions.value) {
-    const submitPromises = peerEvalutions.value.map(async (evaluation) => {
-      const result: SubmitPeerEvaluationResponse = await submitEvaluation(evaluation)
-      return result.data
-    })
-    isLoading.value = true
-    peerEvalutions.value = await Promise.all(submitPromises) // Wait for all promises to resolve
-    isNewSubmission = false // Change to update mode
-    ElMessage.success('Peer evaluations submitted successfully')
+async function recoverOnly() {
+  if (isLoading.value) return
+  isLoading.value = true
+  try {
+    await reconcile()
+  } catch {
+    recoveryWarning.value =
+      'Recovery failed. Your drafts are retained. Retry recovery before submitting; unknown requests will not be replayed.'
+    recoveryRequired.value = true
+  } finally {
     isLoading.value = false
-
-    // Send an submission confirmation email to the submitter
-    await sendPeerEvaluationSubmissionConfirmationEmail(previousWeekRange.value)
-    ElMessage.success('A confirmation email has been sent to you.')
   }
 }
 
-// Update peer evaluations
-async function updatePeerEvaluations() {
-  if (peerEvalutions.value) {
-    const submitPromises = peerEvalutions.value.map(async (evaluation) => {
-      const result: UpdatePeerEvaluationResponse = await updateEvaluation(evaluation)
-      return result.data
-    })
-
-    isLoading.value = true
-    peerEvalutions.value = await Promise.all(submitPromises) // Wait for all promises to resolve
-    ElMessage.success('Peer evaluations updated successfully')
+async function savePeerEvaluations() {
+  if (isLoading.value || recoveryRequired.value || !peerEvalutions.value.length) return
+  isLoading.value = true
+  recoveryWarning.value = ''
+  confirmationOwed ||= isNewSubmission.value
+  try {
+    const rows = peerEvalutions.value
+    const outcomes = await Promise.allSettled(
+      rows.map(async (row) => {
+        const response = row.evaluationId
+          ? await updateEvaluation(row)
+          : await submitEvaluation(row)
+        if (!response.flag) throw new Error(response.message)
+        Object.assign(row, response.data, { outcome: 'saved' })
+      })
+    )
+    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+      outcomes.forEach((outcome, index) => {
+        const row = rows[index]
+        if (row && outcome.status === 'rejected') row.outcome = 'unknown'
+      })
+      recoveryRequired.value = true
+      try {
+        await reconcile()
+      } catch {
+        recoveryWarning.value =
+          'Recovery failed. Your drafts are retained. Retry recovery before submitting; unknown requests will not be replayed.'
+      }
+      return
+    }
+    ElMessage.success('Peer evaluations saved successfully')
+    if (confirmationOwed) {
+      try {
+        await sendPeerEvaluationSubmissionConfirmationEmail(previousWeek.value)
+        confirmationOwed = false
+        ElMessage.success('A confirmation email has been sent to you.')
+      } catch {
+        recoveryWarning.value =
+          'Evaluations were saved, but the confirmation email could not be sent.'
+      }
+    }
+  } finally {
     isLoading.value = false
   }
 }
