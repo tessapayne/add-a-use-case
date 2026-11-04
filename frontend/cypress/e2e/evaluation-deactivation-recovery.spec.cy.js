@@ -244,4 +244,80 @@ describe('Evaluation recipient lifecycle and independent outcomes', () => {
     cy.get('@originalCreates.all').should('have.length', 3)
     cy.wait('@receipt')
   })
+
+  it('retries a confirmed pre-handler authentication 503 after recovery without losing drafts (review R4)', () => {
+    visit()
+    cy.get('.el-table__body tr')
+      .first()
+      .find('textarea')
+      .first()
+      .type('safe authentication retry draft')
+    const unavailable = {
+      flag: false,
+      code: 503,
+      message: 'Account verification is temporarily unavailable. Please try again.',
+      data: { reason: 'account_store_unavailable' }
+    }
+    cy.intercept('POST', '**/evaluations', { statusCode: 503, body: unavailable }).as('authRefused')
+    cy.intercept('GET', '**/students/teams/1', { statusCode: 503, body: unavailable }).as(
+      'outageRead'
+    )
+    cy.get('[data-cy=evaluation-submit]').click()
+    cy.get('[data-cy=evaluation-recovery]').should('contain', 'Recovery failed')
+    cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+    cy.get('.el-table__body tr')
+      .first()
+      .find('textarea')
+      .first()
+      .should('have.value', 'safe authentication retry draft')
+    cy.get('@authRefused.all').should('have.length', 2)
+    cy.get('@receipt.all').should('have.length', 0)
+    cy.window().then((win) =>
+      expect(JSON.parse(win.localStorage.getItem('token')).token).not.to.eq('')
+    )
+    // Account-store recovery yields no saved evaluation, correctly establishing a safe retry.
+    cy.intercept('GET', '**/students/teams/1', ok(roster))
+    cy.get('[data-cy=evaluation-reload]').click()
+    cy.get('[data-cy=evaluation-submit]').should('be.enabled')
+    cy.get('.el-table__body tr')
+      .first()
+      .find('textarea')
+      .first()
+      .should('have.value', 'safe authentication retry draft')
+    cy.intercept('POST', '**/evaluations', (req) =>
+      req.reply(ok({ ...req.body, evaluationId: 100 + req.body.evaluateeId }))
+    ).as('safeRetry')
+    cy.get('[data-cy=evaluation-submit]').click()
+    cy.wait('@safeRetry')
+      .its('request.body.publicComment')
+      .should('eq', 'safe authentication retry draft')
+    cy.get('@safeRetry.all').should('have.length', 2)
+    cy.wait('@receipt')
+    cy.get('@receipt.all').should('have.length', 1)
+  })
+
+  it('keeps an unmarked 503 unknown even when its message resembles authentication failure (review R4)', () => {
+    visit()
+    cy.get('.el-table__body tr').first().find('textarea').first().type('uncertain 503 draft')
+    cy.intercept('POST', '**/evaluations', {
+      statusCode: 503,
+      body: {
+        flag: false,
+        code: 503,
+        message: 'Account verification is temporarily unavailable. Please try again.'
+      }
+    }).as('uncertain503')
+    cy.get('[data-cy=evaluation-submit]').click()
+    cy.get('[data-cy=evaluation-recovery]').should('contain', 'outcomes are still unknown')
+    cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+    cy.get('[data-cy=evaluation-reload]').click()
+    cy.get('[data-cy=evaluation-submit]').should('be.disabled')
+    cy.get('.el-table__body tr')
+      .first()
+      .find('textarea')
+      .first()
+      .should('have.value', 'uncertain 503 draft')
+    cy.get('@uncertain503.all').should('have.length', 2)
+    cy.get('@receipt.all').should('have.length', 0)
+  })
 })

@@ -318,9 +318,18 @@ async function savePeerEvaluations() {
         if (row && outcome.status === 'rejected') {
           // A validation/permission refusal establishes non-creation; timeouts, gateway and server
           // failures do not. In particular, HTTP 408 is not a definitive rejection.
-          const status = isAxiosError(outcome.reason) ? outcome.reason.response?.status : undefined
+          const response = isAxiosError(outcome.reason) ? outcome.reason.response : undefined
+          const status = response?.status
+          // Only this explicit authentication-layer reason guarantees no handler executed.
+          // An ordinary 503 (including an outage with the same human-readable message) is unknown.
+          const accountVerificationRefused =
+            status === 503 &&
+            response?.data?.flag === false &&
+            response.data.code === 503 &&
+            response.data.data?.reason === 'account_store_unavailable'
           row.outcome =
-            status !== undefined && [400, 401, 403, 404, 409, 422].includes(status)
+            accountVerificationRefused ||
+            (status !== undefined && [400, 401, 403, 404, 409, 422].includes(status))
               ? 'rejected'
               : 'unknown'
         }

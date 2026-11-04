@@ -15,7 +15,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.dao.DataAccessResourceFailureException;
 import team.projectpulse.AbstractIntegrationTest;
 import team.projectpulse.student.Student;
 import team.projectpulse.student.StudentRepository;
@@ -43,6 +42,7 @@ class StudentLifecycleSecurityIntegrationTest extends AbstractIntegrationTest {
     @Autowired PlatformTransactionManager transactions;
     @MockitoSpyBean UserRepository users;
     @MockitoSpyBean StudentService service;
+    @MockitoSpyBean team.projectpulse.evaluation.EvaluationService evaluationService;
 
     String login(String username) throws Exception {
         var result = mvc.perform(post("/api/v1/users/login").with(httpBasic(username,"123456")))
@@ -90,15 +90,23 @@ class StudentLifecycleSecurityIntegrationTest extends AbstractIntegrationTest {
     @MethodSource("team.projectpulse.security.ActiveAccountValidatorTest#infrastructureFailures")
     void unavailableAccountStoreReturnsGeneric503WithoutProtectedLogic(RuntimeException failure) throws Exception {
         String token = login("j.smith@abc.edu");
-        clearInvocations(service);
+        clearInvocations(service, evaluationService);
         doThrow(failure).when(users).findById(4);
         mvc.perform(get("/api/v1/students/4").header("Authorization",token))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.flag").value(false))
                 .andExpect(jsonPath("$.code").value(503))
                 .andExpect(jsonPath("$.message").value("Account verification is temporarily unavailable. Please try again."))
-                .andExpect(jsonPath("$.data").isEmpty())
+                .andExpect(jsonPath("$.data.reason").value(ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SECRET"))));
+        mvc.perform(post("/api/v1/evaluations").header("Authorization",token)
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.flag").value(false))
+                .andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.data.reason").value(ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE))
+                .andExpect(jsonPath("$.message").value("Account verification is temporarily unavailable. Please try again."))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SECRET"))));
         verify(service,never()).findStudentById(anyInt());
+        verify(evaluationService,never()).addPeerEvaluation(any());
     }
 
     @ParameterizedTest
