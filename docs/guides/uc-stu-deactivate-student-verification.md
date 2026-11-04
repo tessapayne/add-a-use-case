@@ -12,7 +12,7 @@ This is verification evidence for `UC-STU-deactivate-student`, not a replacement
 
 No schema migration, unrelated TypeScript repair, new status store, notification redesign or completion of the standalone reactivation use case is included. The Maven wrapper's executable bit was corrected so the documented `./mvnw` command works. The confirmation receipt uses its endpoint's ISO week key instead of the old display-range argument.
 
-## Execution results
+## Initial build execution results
 
 - Two parameterized HTTP profile cases also passed after explicitly asserting literal `reactivate=false` for active/inactive accounts; no production code changed after the complete build.
 - Backend targeted runs passed: trunk classes, security wiring (32 tests), new controller acceptance (11 tests), and existing student/evaluation API regressions.
@@ -54,8 +54,10 @@ All named feature tests below passed; grouped rows combine service/HTTP/browser 
 | T-edit | Same controller compatibility test; evaluation browser saved-inactive-recipient case; existing closed-window API regressions | Stored evaluator/recipient/week immutable despite conflicting payload; historical scores are compared separately before authorized editing |
 | T-order | Persistence `lifecycleWritersSerializeAndLastSuccessfulCommitWins` in both parameterized orders | Second writer waits through the first commit; final status follows the later lifecycle operation |
 | T-refresh | Student browser `disables duplicate confirmation and retains acknowledged inactive status when refresh fails` | Separate refresh warning and one mutation |
-| T-recover | Evaluation browser `reconciles mixed saved/rejected/unknown rows...` and `retains drafts and blocks blind replay...`; creation concurrency tests | Known saved IDs retried with PUT, new active drafts with POST; inactive unsaved rows removed with explanation; no overall email on failure |
+| T-recover | Evaluation browser `reconciles mixed saved/rejected/unknown rows...` and `retains drafts and blocks blind replay...`; creation concurrency tests | Known saved IDs retried with PUT, new active drafts with POST; only never-submitted/definitively rejected inactive rows removed with explanation; unknown rows retained until positive outcome; no overall email on failure |
 | T-create-overlap | `EvaluationCreationConcurrencyIntegrationTest.overlappingCreateWaitsForCommitThenRefusesDuplicateDespiteOldSnapshot` and `overlappingCreateSucceedsAfterFirstWriterRollsBack` | Real MySQL repeatable-read snapshot; explicit fixture cleanup, no `@DirtiesContext` |
+| T-init-recovery | Cypress `retries incomplete section initialization...` and `retries incomplete rubric initialization...` | Required dependencies and valid criteria load before reconciliation and submission; initial failures retain the disabled state until recovery succeeds |
+| T-late-commit | MySQL `timedOutOriginalCanCommitAfterInactiveRecipientAndEmptyRecoveryRead`; Cypress `retains an inactive unresolved draft after timeout and empty read, then attaches the late commit ID` | Real database late commit and separate browser timeout/retention assertions; empty read is not proof of failure, and the saved ID selects PUT |
 | T-reminder | Controller teamless/owed test; `SubmissionStatusServiceTest` active-member obligation tests and existing notification integration tests | Inactive students owe nothing and are excluded from required recipient sets |
 
 No target deactivation extension is intentionally left untested. The whole-product baseline frontend checks above remain red independently of this feature's passing acceptance tests. The supporting EVA 5a flow is covered; this does not claim a fresh browser audit of the complete pre-existing EVA use case.
@@ -78,7 +80,7 @@ The mutated test went **red**: the second creator saw its old empty snapshot, in
 
 Each design-matrix row names the retained tests and their requirement oracle. Existing `StudentServiceTest.testInstructorUpdatesStudent` was replaced because its expected generic `enabled` mutation contradicts `BR-student-lifecycle`; the replacement tests both status states through scoped, profile-only writes. The self-profile and scoped-read unit tests were updated to the new repository boundary. Evaluation success/duplicate unit tests were updated for evaluator locking and current-read duplication. No unrelated tests were removed or disabled.
 
-Agent review triage: shared lifecycle/account/creation code and the isolated security rules reviewed directly; controller and frontend leaves checked against their acceptance tests and error states. A fresh-context review and the developer's own labeled diff comment remain outstanding before requesting a human reviewer. This document does not impersonate that human review or claim an independent review occurred inside this implementation session.
+Agent review triage: shared lifecycle/account/creation code and the isolated security rules reviewed directly; controller and frontend leaves checked against their acceptance tests and error states. The developer subsequently supplied three medium-severity findings from an independent fresh-context review; the findings, fixes and follow-up results appear below. Independent re-review and the developer's own labeled diff comment are not claimed by this implementation session.
 
 ## Individual retained test oracles
 
@@ -144,3 +146,29 @@ Each line below is one new or revised test method (parameterized variants share 
 | evaluation-deactivation-recovery.spec.cy.js: never constructs a new inactive-recipient row (T-recipient) | UC-EVA-submit-evaluation 5a; T-recipient/T-edit/T-recover |
 | evaluation-deactivation-recovery.spec.cy.js: reconciles mixed saved/rejected/unknown rows, retains active drafts and retries known saves with PUT (T-recover) | UC-EVA-submit-evaluation 5a; T-recipient/T-edit/T-recover |
 | evaluation-deactivation-recovery.spec.cy.js: retains drafts and blocks blind replay when recovery reads fail (T-recover) | UC-EVA-submit-evaluation 5a; T-recipient/T-edit/T-recover |
+| `EvaluationCreationConcurrencyIntegrationTest.timedOutOriginalCanCommitAfterInactiveRecipientAndEmptyRecoveryRead` | UC-EVA-submit-evaluation 5a; T-late-commit; review R3 |
+| evaluation-deactivation-recovery.spec.cy.js: retries incomplete section initialization before enabling submission | T-init-recovery; review R2 |
+| evaluation-deactivation-recovery.spec.cy.js: retries incomplete rubric initialization before enabling submission | T-init-recovery; review R2 |
+| evaluation-deactivation-recovery.spec.cy.js: retains an inactive unresolved draft after timeout and empty read, then attaches the late commit ID | UC-EVA-submit-evaluation 5a; T-late-commit; review R3 |
+
+## Independent review findings and fixes
+
+The developer supplied these three medium-severity findings from the fresh-context review of PR #3. Each has a separate fix commit; these are implementation/test outcomes, not a claim that the independent reviewer has re-approved the changes.
+
+| Finding | Fix commit and behavior | Regression evidence |
+|---|---|---|
+| R1: transaction-start infrastructure exceptions escape account validation | `914dbfe`: `ActiveAccountValidator` also maps `CannotCreateTransactionException`, `TransactionSystemException` and `TransactionTimedOutException` to its generic account-store failure; does not catch arbitrary runtime/programming errors | `ActiveAccountValidatorTest.outageProducesDistinctGenericError` and `StudentLifecycleSecurityIntegrationTest.unavailableAccountStoreReturnsGeneric503WithoutProtectedLogic`, each parameterized over DAO/create/system/timeout failures; exact envelope/message, no internal details, no protected student handler. Focused auth run: 34 passed |
+| R2: recovery bypasses incomplete section/rubric initialization | `637ab59`: retry incomplete initialization before reconciliation; candidate construction and submission require successfully loaded criteria | Two Cypress cases, `retries incomplete section initialization...` and `retries incomplete rubric initialization...`, verify initial refusal, no premature reconciliation, disabled in-flight submission, then valid ratings and successful recovery/submission. Focused six-case run passed |
+| R3: an empty recovery read drops an inactive unresolved draft before original commit | `e82da23`: distinguish definitive rejection from unknown outcomes; preserve unknown rows even for inactive recipients, keep Submit/confirmation blocked, and resolve only on a positive stored outcome | `EvaluationCreationConcurrencyIntegrationTest.timedOutOriginalCanCommitAfterInactiveRecipientAndEmptyRecoveryRead` and Cypress `retains an inactive unresolved draft after timeout and empty read, then attaches the late commit ID`; all three MySQL concurrency cases and seven recovery browser cases passed |
+
+The MySQL regression pauses creation after validation and before its real JPA insert, times out the caller without cancelling the transaction, commits recipient deactivation, and reads no evaluation. Releasing the original then commits the stored evaluation. Its committed fixtures are explicitly cleaned up. The browser regression separately uses an actual Axios timeout and staged backend responses to assert draft fields remain, no blind replay/email occurs, and the saved ID later selects PUT. It does not claim Cypress mocks themselves prove a database commit.
+
+Unknown outcomes have no time-based expiry. If the backend still provides no positive outcome, the row remains retained and submission remains blocked; absence from one read is not treated as proof of rollback. Definitive rejected inactive rows can still be removed with explanation. No new polling window, operation-status endpoint, token state, schema change or unrelated baseline repair was introduced.
+
+### Follow-up verification
+
+- Full backend after review fixes: **503 tests passed, zero failures/errors/skips; `./mvnw package` succeeded**.
+- Full Cypress after review fixes: **26 passed, 4 failed, 4 skipped** across 34 cases; the 15 feature cases and 9 reminder cases pass, while only the unchanged login/menu baseline specs fail; all seven focused recovery cases already pass.
+- Required frontend build still reports exactly the same **18 baseline diagnostics**, with no feature-file errors and no unrelated source modifications.
+- Vite production bundle: **passed**.
+- Design rows `T-jwt`, `T-recover`, `T-init-recovery` and `T-late-commit` and the affected UC/FR traceability cells now name the added cases. No deactivation extension was removed from the acceptance list.
