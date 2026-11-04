@@ -3,7 +3,7 @@
 > Realizes: [UC-STU-deactivate-student](../requirements/use-cases.md#uc-stu-deactivate-student-the-course-admininstructor-deactivates-a-student)
 > Depends on FRs: FR-SEC-authentication, FR-SEC-authorization, FR-SEC-deny-unauthorized, FR-SEC-active-account ([SRS](../requirements/software-requirements-specification.md#security-and-authorization-requirements))
 > Supporting change: [UC-EVA-submit-evaluation](../requirements/use-cases.md#uc-eva-submit-evaluation-the-student-submits-a-peer-evaluation-for-the-previous-week); compatibility only for UC-STU-reactivate-student.
-> Review state: design PR #2 merged; the developer additionally approved serialized evaluation creation with a duplicate recheck during implementation. No completed implementation is claimed.
+> Review state: design PR #2 merged; the developer additionally approved serialized evaluation creation with a duplicate recheck during implementation. Implementation and feature verification are recorded in [the build evidence](../guides/uc-stu-deactivate-student-verification.md); unrelated baseline checks remain separately identified.
 
 ## Overview
 
@@ -11,7 +11,7 @@ Extend the existing student vertical slice inside the [platform containers](arch
 
 ## Components & classes
 
-Paths below are relative to the repository root. New paths are proposed implementation destinations, not existing artifacts.
+Paths below are relative to the repository root. The linked paths and named new classes are implemented in the build branch.
 
 | Component | Reuse / change | Responsibility and file |
 |---|---|---|
@@ -21,6 +21,7 @@ Paths below are relative to the repository root. New paths are proposed implemen
 | Student controller / service | Extend [StudentController.java](../../backend/src/main/java/team/projectpulse/student/StudentController.java), [StudentService.java](../../backend/src/main/java/team/projectpulse/student/StudentService.java) | Deactivate endpoint; transaction boundaries; same-student lifecycle row locking; atomic profile-save and compatibility reactivation |
 | Student persistence | Extend [StudentRepository.java](../../backend/src/main/java/team/projectpulse/student/StudentRepository.java) | Caller-scoped lookup and mutation predicates; lifecycle row lock; targeted status/profile writes; refresh DTO from current state |
 | Lifecycle permission | Extend [StudentSecurityService.java](../../backend/src/main/java/team/projectpulse/student/StudentSecurityService.java); new `backend/src/main/java/team/projectpulse/security/authorizationmanagers/StudentLifecycleAuthorizationManager.java` | Course ownership or assigned course-section instructor, with direct or inherited instructor authority; fail closed |
+| Lifecycle intent parser | New `backend/src/main/java/team/projectpulse/security/StudentLifecycleIntentFilter.java` | Parse the strict optional query once after authentication, store the instruction on the request, map malformed input outside the guard |
 | JWT account check | New `backend/src/main/java/team/projectpulse/security/ActiveAccountValidator.java`; extend [SecurityConfiguration.java](../../backend/src/main/java/team/projectpulse/security/SecurityConfiguration.java) | Compose current-account validation with existing JWT validation; strict identity validation; 503 mapping for account-store failure; register deactivation and intent-aware PUT rules |
 | Shared error mapping | Extend [StatusCode.java](../../backend/src/main/java/team/projectpulse/system/StatusCode.java), [ExceptionHandlerAdvice.java](../../backend/src/main/java/team/projectpulse/system/exception/ExceptionHandlerAdvice.java) and [CustomBearerTokenAuthenticationEntryPoint.java](../../backend/src/main/java/team/projectpulse/security/CustomBearerTokenAuthenticationEntryPoint.java) as needed | SERVICE_UNAVAILABLE/503 Result for account-store failure, with a generic message and no internal exception details |
 | Shared identity | Reuse [UserRepository.java](../../backend/src/main/java/team/projectpulse/user/UserRepository.java), [MyUserPrincipal.java](../../backend/src/main/java/team/projectpulse/user/MyUserPrincipal.java) | Current enabled-state lookup for students and instructors; existing login enabled check |
@@ -60,6 +61,9 @@ classDiagram
     class StudentSecurityService {
         <<extended>>
     }
+    class StudentLifecycleIntentFilter {
+        <<new>>
+    }
     class ActiveAccountValidator {
         <<new>>
     }
@@ -80,6 +84,8 @@ classDiagram
     StudentController --> StudentService
     StudentService --> StudentRepository
     StudentLifecycleAuthorizationManager --> StudentSecurityService
+    StudentLifecycleIntentFilter --> StudentController : parsed instruction
+    StudentLifecycleIntentFilter --> StudentLifecycleAuthorizationManager : parsed instruction
     ActiveAccountValidator --> UserRepository
     EvaluationService --> StudentRepository : lock evaluator
     EvaluationService --> PeerEvaluationRepository : current duplicate read
@@ -249,7 +255,7 @@ stateDiagram-v2
 
 ## Reuse & cross-cutting
 
-Use the shared Axios client, `Result`/global error mapping, JWT machinery, `UserUtils`, service transactions, existing DTO converters and active-only submission-owed logic. Add no new Pinia store, email workflow, lock subsystem or notification. Preserve the full team roster for other callers. Existing evaluations loaded into the submission editor must remain editable under their prior rules even when their recipient is inactive; filtering applies only when constructing new candidates. A form loaded before deactivation is backed by the creation-time server check. Evaluation updates keep the stored evaluator, recipient and week; ignore conflicting payload identity/week fields as the existing service does, and validate the submission window using stored data. The shared converter must not impose a creation-only recipient-active restriction on updates.
+Use the shared Axios client, `Result`/global error mapping, JWT machinery, `UserUtils`, service transactions, existing DTO converters and active-only submission-owed logic. Add no new Pinia store, email workflow, lock subsystem or notification. Preserve the full team roster for other callers. Existing evaluations loaded into the submission editor must remain editable under their prior rules even when their recipient is inactive; filtering applies only when constructing new candidates. A form loaded before deactivation is backed by the creation-time server check. Evaluation updates keep the stored evaluator, recipient and week; ignore conflicting payload identity/week fields as the existing service does, and validate the submission window using stored data. The shared converter must not impose a creation-only recipient-active restriction on updates. The submission-confirmation API receives the ISO week key; the display range is presentation only.
 
 ### Stale evaluation recovery
 
@@ -257,7 +263,7 @@ Evaluation creation acquires a pessimistic write lock on the evaluator's existin
 
 Keep outcomes per row because existing evaluation requests commit independently; this is not an atomic batch. Settle each request before reconciliation, always end loading, and do not report overall success after any row fails. After an inactive-recipient rejection, reload the current roster and stored evaluations, merge by stored evaluation ID and evaluator/recipient/week identity, preserve unsaved drafts for active recipients, and remove only unsaved new rows for inactive recipients with an explanation. Keep saved rows, including evaluations about inactive students, subject to existing editing-window rules. If reconciliation itself fails, retain drafts and show a retry/reload warning; do not blindly replay unknown outcomes. Retry unsaved rows with POST and known saved rows with PUT; use per-row persisted state rather than the current page-wide new-submission flag. Send the existing overall submission-confirmation email only after all applicable row operations succeed. No unrelated email redesign is included.
 
-The approved platform delta is documented under [Authentication](architectural-design.md#authentication): current-account validation is a designed change, not deployed behavior. It covers both capability areas and both account types. Account checks use persisted state without an enabled-status cache. Requests authenticated after the deactivation commit are denied; requests already authenticated may complete. No push disconnect, removal of browser-cached content, or transaction-level cancellation is promised.
+The approved platform delta is documented under [Authentication](architectural-design.md#authentication): current-account validation is implemented in the build branch; this does not claim deployment before the build PR merges. It covers both capability areas and both account types. Account checks use persisted state without an enabled-status cache. Requests authenticated after the deactivation commit are denied; requests already authenticated may complete. No push disconnect, removal of browser-cached content, or transaction-level cancellation is promised.
 
 ## Tests
 
@@ -308,7 +314,7 @@ There is no `npm test` script. Map every design test row to actual test names an
 ## Open questions / risks
 
 - No unresolved product decision remains from the approved Phase 2 discussion. The developer supplied 11 findings from the independent fresh-session questions test and approved all resolutions, now incorporated here. The design was merged in PR #2. The implementation-stage evaluation serialization decision is recorded above and will be named as a design change in the build PR.
-- Current code still has generic status mutation and no live JWT account check; this document specifies future changes. The reactivation UC remains In progress and its notification remains outside this assignment.
+- The build replaces generic student status mutation with explicit lifecycle operations and wires the shared live JWT account check. The reactivation UC remains In progress and its notification remains outside this assignment.
 - A peer-evaluation request already authenticated before deactivation may finish. Creation checks current recipient state when validated; no serializable cross-request ordering is promised. The approved cutoff does not cancel in-flight work.
 - Status-only restoration permits old unexpired tokens again. This is intentional; the existing SPA may already have discarded its token after a 401, requiring that browser to log in again.
 - Shared validator wiring must preserve Spring's existing validation/error mapping. Account lookup must not depend on an already-established `SecurityContext`, because validation precedes it.

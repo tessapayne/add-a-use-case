@@ -106,6 +106,10 @@ class StudentDeactivationIntegrationTest extends AbstractIntegrationTest {
         students.findById(4).orElseThrow().setEnabled(active);em.flush();
         var draft=profile(4);draft.put("enabled",!active);
         save(4,admin,false,draft,200);persisted(4,active,"Changed");
+        mvc.perform(put("/api/v1/students/4").param("reactivate","false").header("Authorization",admin)
+                        .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(draft)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.flag").value(true)).andExpect(jsonPath("$.code").value(200));
+        persisted(4,active,"Changed");
     }
 
     @Test
@@ -156,8 +160,8 @@ class StudentDeactivationIntegrationTest extends AbstractIntegrationTest {
         for(var entry:before.entrySet()) assertThat(jdbc.queryForList("select * from "+entry.getKey())).isEqualTo(entry.getValue());
         var after=new HashMap<>(jdbc.queryForMap("select * from peer_evaluation_user where id=4"));
         account.remove("enabled");after.remove("enabled");assertThat(after).isEqualTo(account);
-        mvc.perform(post("/api/v1/teams/1/documents/search").header("Authorization",admin).contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isOk());
-        mvc.perform(get("/api/v1/evaluations/students/4/week/2023-W31/details").header("Authorization",admin)).andExpect(status().isOk());
+        mvc.perform(post("/api/v1/teams/1/documents/search").header("Authorization",admin).contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isOk()).andExpect(jsonPath("$.flag").value(true)).andExpect(jsonPath("$.code").value(200));
+        mvc.perform(get("/api/v1/evaluations/students/4/week/2023-W31/details").header("Authorization",admin)).andExpect(status().isOk()).andExpect(jsonPath("$.flag").value(true)).andExpect(jsonPath("$.code").value(200));
     }
 
     @Test

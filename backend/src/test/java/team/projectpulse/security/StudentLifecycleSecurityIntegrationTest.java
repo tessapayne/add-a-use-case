@@ -143,9 +143,9 @@ class StudentLifecycleSecurityIntegrationTest extends AbstractIntegrationTest {
         });
         try {
             String token = login(email);
-            mvc.perform(get("/api/v1/"+(instructor ? "instructors/" : "students/")+id).header("Authorization",token)).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/"+(instructor ? "instructors/" : "students/")+id).header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.flag").value(true)).andExpect(jsonPath("$.code").value(200));
             tx.executeWithoutResult(status -> users.findById(id).orElseThrow().setEnabled(false));
-            for (String path : List.of("/students/4","/teams/1/documents","/evaluations/evaluators/4/week/2023-W32")) {
+            for (String path : List.of("/students/4","/teams/1/documents/1","/evaluations/evaluators/4/week/2023-W32")) {
                 mvc.perform(get("/api/v1"+path).header("Authorization",token)).andExpect(status().isUnauthorized())
                         .andExpect(jsonPath("$.flag").value(false)).andExpect(jsonPath("$.code").value(401));
             }
@@ -154,7 +154,7 @@ class StudentLifecycleSecurityIntegrationTest extends AbstractIntegrationTest {
             mvc.perform(post("/api/v1/users/login").with(httpBasic(email,"123456")))
                     .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(401)).andExpect(jsonPath("$.flag").value(false));
             tx.executeWithoutResult(status -> users.findById(id).orElseThrow().setEnabled(true));
-            mvc.perform(get("/api/v1/"+(instructor ? "instructors/" : "students/")+id).header("Authorization",token)).andExpect(status().isOk());
+            mvc.perform(get("/api/v1/"+(instructor ? "instructors/" : "students/")+id).header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.flag").value(true)).andExpect(jsonPath("$.code").value(200));
             tx.executeWithoutResult(status -> users.deleteById(id));
             refused(token,401);
         } finally {
