@@ -8,6 +8,8 @@ import team.projectpulse.student.dto.StudentRegistrationRequest;
 import team.projectpulse.system.Result;
 import team.projectpulse.system.StatusCode;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
+import team.projectpulse.security.StudentLifecycleIntentFilter;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.*;
@@ -63,11 +65,17 @@ public class StudentController {
     }
 
     @PutMapping("/{studentId}")
-    public Result updateStudent(@PathVariable Integer studentId, @Valid @RequestBody StudentDto studentDto) {
+    public Result updateStudent(@PathVariable Integer studentId, @Valid @RequestBody StudentDto studentDto, HttpServletRequest request) {
         Student update = this.studentDtoToStudentConverter.convert(studentDto);
-        Student updatedStudent = this.studentService.updateStudent(studentId, update);
+        Student updatedStudent = this.studentService.updateStudent(studentId, update, StudentLifecycleIntentFilter.reactivate(request));
         StudentDto updatedStudentDto = this.studentToStudentDtoConverter.convert(updatedStudent);
         return new Result(true, StatusCode.SUCCESS, "Update student successfully", updatedStudentDto);
+    }
+
+    @PostMapping("/{studentId}/deactivate")
+    public Result deactivateStudent(@PathVariable Integer studentId) {
+        Student student = this.studentService.deactivateStudent(studentId);
+        return new Result(true, StatusCode.SUCCESS, "Student deactivated successfully", this.studentToStudentDtoConverter.convert(student));
     }
 
     @DeleteMapping("/{studentId}")
