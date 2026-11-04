@@ -1458,10 +1458,13 @@ Details:
 
 **Preconditions:**
 - PRE-1. The course admin or instructor is logged into the system.
-- PRE-2. There exists at least one active student in the system.
+- PRE-2. The target student exists; the normal flow starts with an active account (extension 6a handles an already inactive account).
+- PRE-3. The caller owns the student's course as course admin or is an instructor assigned to the student's course section (BR-student-lifecycle).
 
 **Postconditions:**
 - POST-1. The student's account is deactivated.
+- POST-2. Course enrollment, team membership (including no team), and all existing reports, evaluations by or about the student, and other historical records are preserved.
+- POST-3. Requests authenticated after deactivation commits cannot access protected resources with this account, including with an existing JWT (FR-SEC-active-account). Requests already authenticated may finish.
 
 **Main Success Scenario:**
 1. The course admin or instructor indicates to deactivate a student.
@@ -1473,12 +1476,39 @@ Details:
 7. Use case ends.
 
 **Extensions:**
+- **1a. The caller is unauthenticated or has an inactive account:**
+  - 1a1. The system refuses access without changing the target student.
+  - 1a2. Use case ends.
+- **3a. The caller lacks lifecycle permission, or the target cannot be resolved during authorization:**
+  - 3a1. The system refuses the operation without changing any records or disclosing whether an inaccessible student exists.
+  - 3a2. Use case ends.
+- **5a. The caller cancels before submitting confirmation:**
+  - 5a1. The system closes the confirmation without submitting deactivation or changing records.
+  - 5a2. Use case ends.
+- **6a. The student is already inactive, including a repeated request:**
+  - 6a1. After checking permission, the system reports success with the current inactive state; no other data changes.
+  - 6a2. Use case ends.
+- **6b. The student disappears or leaves the caller's permitted scope after route authorization but before service lookup or mutation:**
+  - 6b1. The system reports that the student was not found and makes no changes, without distinguishing deletion from loss of access.
+  - 6b2. Use case ends.
+- **6c. The update fails or its response is lost:**
+  - 6c1. A failed transaction leaves records unchanged. The system does not claim success without a successful response.
+  - 6c2. If the outcome is unknown, the caller may reload the current state or retry; a committed deactivation is handled by extension 6a.
+- **6d. Deactivation succeeds but a subsequent student-list refresh fails:**
+  - 6d1. The system retains the acknowledged inactive state and success message, and separately warns that the list could not be refreshed.
+  - 6d2. The caller may retry the list refresh; the system does not automatically repeat deactivation.
+
 **Priority:** Low
 **Frequency of Use:** Rare. Occurs occasionally when a student withdraws from a course section.
-**Business Rules:** BR-student-lifecycle
+**Business Rules:** BR-student-lifecycle, BR-section-scoped-access, BR-role-based-access
 
 **Associated Information:**
-- Consequence of the deactivation: The student will no longer be able to log in or submit weekly activity reports and peer evaluations, but the student's account and her previously submitted work are kept in the system. Deactivation will NOT remove the student from the system, and the account can be reactivated in the future (UC-STU-reactivate-student: Reactivate a student). This is distinct from deletion (UC-STU-delete-student: Delete a student), which is a physical, unrecoverable delete. The course admin or instructor shall be able to cancel the use case at any time prior to submitting it.
+- Consequence of the deactivation: The student cannot log in, submit weekly activity reports or peer evaluations, or access other protected resources. Deactivation does not delete the account or alter enrollment, team membership, or historical records; reactivation remains possible through UC-STU-reactivate-student: Reactivate a student. This differs from physical, unrecoverable deletion (UC-STU-delete-student: Delete a student).
+- Inactive students are excluded from new peer evaluations; existing evaluations and scores remain available to authorized readers. Previously submitted evaluations retain their existing editing-window rules (BR-evaluation-editable-until-close, BR-evaluation-submission-window).
+- Ordinary profile edits never change account status. Restoring access requires an explicit, confirmed instruction by a caller with lifecycle permission. Preserving the existing reactivation capability is compatibility maintenance here, not completion of the separate reactivation use case or its notification workflow.
+- No token blocklist or token version is required: after reactivation an otherwise-valid, unexpired JWT may work again. The browser clears its login state on a rejected request; remote removal of already displayed information is not required.
+- The caller can cancel at any time before submitting confirmation. A student without a team can be deactivated.
+- Honors FR-SEC-authentication, FR-SEC-authorization, FR-SEC-deny-unauthorized, and FR-SEC-active-account.
 
 **Related Use Cases:** UC-STU-delete-student: Delete a student; UC-STU-reactivate-student: Reactivate a student
 **Assumptions:**
@@ -2202,9 +2232,9 @@ Report generating algorithm: N/A
 
 **Main Success Scenario:**
 1. The student indicates to submit a peer evaluation for the previous week.
-2. The system asks the student to provide peer evaluations for every team member.
+2. The system offers active team members as recipients of new peer evaluations; previously submitted evaluations remain available under their existing visibility and editing-window rules.
 3. See the "Details" defined in the Associated Information of this use case.
-4. The student evaluates each team member (self included) and confirms that she has finished.
+4. The student evaluates each active team member (self included) and confirms that she has finished.
 5. The system validates the student's inputs according to the "Details" defined in the Associated Information of this use case.
 6. The system displays the details of the peer evaluation and asks the student to confirm the evaluation and submission.
 7. The system notes that a submitted peer evaluation remains editable while its submission window is open; the student may re-submit it to update it until the window closes (BR-evaluation-editable-until-close, BR-evaluation-submission-window).
@@ -2226,14 +2256,19 @@ Report generating algorithm: N/A
   - 4a1. The system alerts the student that an input validation rule is violated and displays the nature and location of the error.
   - 4a2. The student corrects the mistake and returns to step 4 of the normal flow.
 
+- **5a. A recipient of a new peer evaluation is inactive, including deactivation after the form was loaded:**
+  - 5a1. The system rejects creation of that evaluation without changing existing evaluations and explains that the recipient is inactive.
+  - 5a2. The system reconciles current recipients and stored evaluations, preserving unsaved drafts for active recipients and previously saved evaluations; it removes only unsaved new evaluations for inactive recipients with an explanation.
+  - 5a3. Requests save independently. The system does not report overall success or send an overall submission-confirmation email while applicable row operations remain unsuccessful. Unknown outcomes are reconciled before retry to avoid duplicates. Loading ends on failure; if reconciliation also fails, drafts remain available for recovery. Previously submitted evaluations retain their existing editing-window rules.
+
 **Priority:** High
 **Frequency of Use:** Approximately 35-40 users, 1 usage per week.
-**Business Rules:** BR-team-scoped-access (the student evaluates the members of a team she belongs to, and no other team), BR-team-assignment-required (only a student assigned to a team submits one), BR-active-weeks, BR-evaluation-editable-until-close, BR-evaluation-submission-window, BR-evaluation-private-comment
+**Business Rules:** BR-team-scoped-access (the student evaluates the members of a team she belongs to, and no other team), BR-team-assignment-required (only a student assigned to a team submits one), BR-active-weeks, BR-evaluation-editable-until-close, BR-evaluation-submission-window, BR-evaluation-private-comment, BR-student-lifecycle, BR-evaluation-active-recipient
 
 **Associated Information:**
 
 Details:
-- Every team member MUST be evaluated.
+- Every active team member MUST be evaluated (BR-submission-owed). New evaluations may not target an inactive student (BR-evaluation-active-recipient). Deactivation preserves existing evaluations and their scores; it does not recalculate historical results.
 - Scores MUST be integers.
 
 Example (each team member, self included, is evaluated on every rubric criterion):
