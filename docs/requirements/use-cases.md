@@ -1488,12 +1488,15 @@ Details:
 - **6a. The student is already inactive, including a repeated request:**
   - 6a1. After checking permission, the system reports success with the current inactive state; no other data changes.
   - 6a2. Use case ends.
-- **6b. The student disappears after authorization but before the update:**
-  - 6b1. The system reports that the student was not found and makes no changes.
+- **6b. The student disappears or leaves the caller's permitted scope after route authorization but before service lookup or mutation:**
+  - 6b1. The system reports that the student was not found and makes no changes, without distinguishing deletion from loss of access.
   - 6b2. Use case ends.
 - **6c. The update fails or its response is lost:**
   - 6c1. A failed transaction leaves records unchanged. The system does not claim success without a successful response.
   - 6c2. If the outcome is unknown, the caller may reload the current state or retry; a committed deactivation is handled by extension 6a.
+- **6d. Deactivation succeeds but a subsequent student-list refresh fails:**
+  - 6d1. The system retains the acknowledged inactive state and success message, and separately warns that the list could not be refreshed.
+  - 6d2. The caller may retry the list refresh; the system does not automatically repeat deactivation.
 
 **Priority:** Low
 **Frequency of Use:** Rare. Occurs occasionally when a student withdraws from a course section.
@@ -2255,7 +2258,8 @@ Report generating algorithm: N/A
 
 - **5a. A recipient of a new peer evaluation is inactive, including deactivation after the form was loaded:**
   - 5a1. The system rejects creation of that evaluation without changing existing evaluations and explains that the recipient is inactive.
-  - 5a2. The student reloads the recipient list and continues with active recipients. Previously submitted evaluations retain their existing editing-window rules.
+  - 5a2. The system reconciles current recipients and stored evaluations, preserving unsaved drafts for active recipients and previously saved evaluations; it removes only unsaved new evaluations for inactive recipients with an explanation.
+  - 5a3. Requests save independently. The system does not report overall success or send an overall submission-confirmation email while applicable row operations remain unsuccessful. Unknown outcomes are reconciled before retry to avoid duplicates. Loading ends on failure; if reconciliation also fails, drafts remain available for recovery. Previously submitted evaluations retain their existing editing-window rules.
 
 **Priority:** High
 **Frequency of Use:** Approximately 35-40 users, 1 usage per week.
