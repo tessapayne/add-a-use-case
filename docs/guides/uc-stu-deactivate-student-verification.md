@@ -58,6 +58,7 @@ All named feature tests below passed; grouped rows combine service/HTTP/browser 
 | T-create-overlap | `EvaluationCreationConcurrencyIntegrationTest.overlappingCreateWaitsForCommitThenRefusesDuplicateDespiteOldSnapshot` and `overlappingCreateSucceedsAfterFirstWriterRollsBack` | Real MySQL repeatable-read snapshot; explicit fixture cleanup, no `@DirtiesContext` |
 | T-init-recovery | Cypress `retries incomplete section initialization...` and `retries incomplete rubric initialization...` | Required dependencies and valid criteria load before reconciliation and submission; initial failures retain the disabled state until recovery succeeds |
 | T-late-commit | MySQL `timedOutOriginalCanCommitAfterInactiveRecipientAndEmptyRecoveryRead`; Cypress `retains an inactive unresolved draft after timeout and empty read, then attaches the late commit ID` | Real database late commit and separate browser timeout/retention assertions; empty read is not proof of failure, and the saved ID selects PUT |
+| T-auth-outage-retry | HTTP outage tests plus the two R4 Cypress cases | Explicit authentication reason permits safe retry after successful recovery; status/message alone do not; drafts and login survive |
 | T-reminder | Controller teamless/owed test; `SubmissionStatusServiceTest` active-member obligation tests and existing notification integration tests | Inactive students owe nothing and are excluded from required recipient sets |
 
 No target deactivation extension is intentionally left untested. The whole-product baseline frontend checks above remain red independently of this feature's passing acceptance tests. The supporting EVA 5a flow is covered; this does not claim a fresh browser audit of the complete pre-existing EVA use case.
@@ -172,3 +173,30 @@ Unknown outcomes have no time-based expiry. If the backend still provides no pos
 - Required frontend build still reports exactly the same **18 baseline diagnostics**, with no feature-file errors and no unrelated source modifications.
 - Vite production bundle: **passed**.
 - Design rows `T-jwt`, `T-recover`, `T-init-recovery` and `T-late-commit` and the affected UC/FR traceability cells now name the added cases. No deactivation extension was removed from the acceptance list.
+
+## Re-review R4: confirmed authentication refusal is safely retryable
+
+The developer supplied the independent re-review of `9982b54`: R1 and R2 are resolved and the original R3 loss-of-draft defect is fixed. R4 identifies a regression where a confirmed pre-handler account-verification outage was treated as unknown forever. Fix commit `cc987e5` distinguishes that case without weakening protection for uncertain requests.
+
+Only `AccountStoreUnavailableException`, raised by bearer authentication before the protected handler, emits HTTP 503 with `flag=false`, `code=503` and `data.reason=account_store_unavailable`. The message stays generic and exposes no database or transaction internals. The client requires this explicit machine-readable reason and matching envelope to classify a safe refusal; neither status 503 alone nor the human-readable message establishes that nothing happened.
+
+For that known refusal, drafts and login are retained. Failed recovery reads still keep Submit disabled. Once the account store recovers and required reads succeed, the absence of saved evaluations permits retry with the preserved drafts. A generic 503 remains unknown and cannot be blindly replayed. No new schema, route rule or unrelated baseline repair is included.
+
+| Regression | Test / oracle | Result |
+|---|---|---|
+| Explicit pre-handler refusal signal | `StudentLifecycleSecurityIntegrationTest.unavailableAccountStoreReturnsGeneric503WithoutProtectedLogic` over DAO/create/system/timeout failures; GET and evaluation POST pin the public reason string, exact generic envelope, no internal details, and no protected student/evaluation service execution | All 34 focused authentication tests passed |
+| Authentication outage followed by recovery and successful submission | Cypress `retries a confirmed pre-handler authentication 503 after recovery without losing drafts (review R4)` | Draft and token retained; recovery failure blocks Submit; successful recovery enables safe POST with original fields; confirmation occurs only after successful submission |
+| Arbitrary 503 is not confirmed refusal | Cypress `keeps an unmarked 503 unknown even when its message resembles authentication failure (review R4)` | Empty recovery reads retain the draft and keep Submit disabled; no replay or confirmation |
+
+The nine focused recovery browser cases pass, including the prior R2 initialization and R3 delayed-original-commit regressions. Design row `T-auth-outage-retry` and UC/FR traceability record the distinction. Independent re-review of R4's fix is not claimed here.
+
+### R4 final verification
+
+- Full backend: **503 tests passed, zero failures/errors/skips** (`./mvnw package`). Packaging then failed because stale generated output contained a duplicate `ProjectPulseApplication 2.class`; `./mvnw clean package -DskipTests` removed that output and **packaged successfully**. The recovery command intentionally did not rerun the already-passing suite. All 34 focused authentication tests also passed.
+- Full Cypress against the stable environment: **28 passed, 4 failed, 4 skipped** across 36 cases. All **17 feature cases** (9 evaluation recovery, 8 student deactivation) and 9 reminder cases passed. The unchanged login spec has two baseline failures (stale heading/credentials); the legacy peer-evaluation and weekly-activity login hooks each fail and skip two cases.
+- Required frontend build: **failed with the same 18 pre-existing TypeScript diagnostics**, compared directly with the recorded baseline; no unrelated TypeScript files or legacy Cypress specs were modified.
+- Vite production bundle (`npm run build-only`): **passed**.
+
+The first broad Cypress attempt was invalidated by a development-server restart/reseed (connection refusal and temporarily missing fixtures). The stable rerun above used the existing test database/mail ports, disabled backend devtools restart through JVM arguments, and waited for application readiness; no repository configuration changed. Local logs: `/tmp/stu-r4-auth.log`, `/tmp/stu-r4-cypress.log`, `/tmp/stu-r4-cypress-stable.log`, `/tmp/stu-r4-backend-full.log`, `/tmp/stu-r4-packaging.log`, `/tmp/stu-r4-build.log`, and `/tmp/stu-r4-bundle.log`.
+
+Documentation consistency checks passed reference/link checks and retained the 38 existing findings (25 empty extension lists, one duplicate heading, and 12 measurability heuristics); no unrelated spec repair was made. R4 is ready for another independent review; PR #3 remains draft and unmerged.

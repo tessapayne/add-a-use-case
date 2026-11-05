@@ -96,13 +96,13 @@ class StudentLifecycleSecurityIntegrationTest extends AbstractIntegrationTest {
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.flag").value(false))
                 .andExpect(jsonPath("$.code").value(503))
                 .andExpect(jsonPath("$.message").value("Account verification is temporarily unavailable. Please try again."))
-                .andExpect(jsonPath("$.data.reason").value(ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE))
+                .andExpect(jsonPath("$.data.reason").value("account_store_unavailable"))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SECRET"))));
         mvc.perform(post("/api/v1/evaluations").header("Authorization",token)
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.flag").value(false))
                 .andExpect(jsonPath("$.code").value(503))
-                .andExpect(jsonPath("$.data.reason").value(ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE))
+                .andExpect(jsonPath("$.data.reason").value("account_store_unavailable"))
                 .andExpect(jsonPath("$.message").value("Account verification is temporarily unavailable. Please try again."))
                 .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SECRET"))));
         verify(service,never()).findStudentById(anyInt());
