@@ -3,6 +3,7 @@ package team.projectpulse.student;
 import team.projectpulse.system.UserUtils;
 import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
+import org.springframework.dao.DataAccessException;
 
 /**
  * Answers the questions a route asks about one named student: is that student the caller herself
@@ -28,7 +29,28 @@ public class StudentSecurityService {
 
     public boolean isStudentSelf(Integer studentId) {
         Integer studentIdFromJwt = this.userUtils.getUserId();
-        return studentId.equals(studentIdFromJwt);
+        return studentId != null && studentId.equals(studentIdFromJwt);
+    }
+
+    public boolean canManageLifecycle(Integer studentId) {
+        if (studentId == null || !this.userUtils.hasRoleIncludingHierarchy("ROLE_instructor")) {
+            return false;
+        }
+        try {
+            return this.studentRepository.findAccessible(studentId, this.userUtils.getUserId(), true, true, false).isPresent();
+        } catch (DataAccessException ex) {
+            return false;
+        }
+    }
+
+    public boolean canViewStudent(Integer studentId) {
+        if (studentId == null) return false;
+        try {
+            return this.studentRepository.findAccessible(studentId, this.userUtils.getUserId(),
+                    this.userUtils.hasRoleIncludingHierarchy("ROLE_instructor"), true, true).isPresent();
+        } catch (DataAccessException ex) {
+            return false;
+        }
     }
 
     /**

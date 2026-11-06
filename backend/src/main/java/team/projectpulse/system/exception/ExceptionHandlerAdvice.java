@@ -37,6 +37,15 @@ import java.util.Map;
 @RestControllerAdvice
 public class ExceptionHandlerAdvice {
 
+    @ExceptionHandler(team.projectpulse.security.AccountStoreUnavailableException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    Result handleAccountStoreUnavailable(team.projectpulse.security.AccountStoreUnavailableException ex) {
+        // This exception is emitted only by bearer authentication before protected business logic.
+        // The explicit reason lets clients distinguish safe retry from an uncertain generic 503.
+        return new Result(false, StatusCode.SERVICE_UNAVAILABLE, ex.getMessage(),
+                Map.of("reason", team.projectpulse.security.ActiveAccountValidator.ACCOUNT_STORE_UNAVAILABLE));
+    }
+
     @ExceptionHandler(ObjectNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     Result handleObjectNotFoundException(ObjectNotFoundException ex) {

@@ -1,11 +1,9 @@
 package team.projectpulse.student;
 
 import org.junit.jupiter.api.AfterEach;
-import team.projectpulse.instructor.Instructor;
 import team.projectpulse.section.Section;
 import team.projectpulse.section.SectionRepository;
 import team.projectpulse.system.UserUtils;
-import team.projectpulse.user.MyUserPrincipal;
 import team.projectpulse.user.userinvitation.UserInvitationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,8 +16,6 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
@@ -92,7 +88,7 @@ class StudentServiceTest {
     void testFindStudentById() {
         // Given
         Student john = this.students.get(0);
-        given(this.studentRepository.findById(1)).willReturn(Optional.of(john));
+        given(this.studentRepository.findAccessible(1, 0, false, true, true)).willReturn(Optional.of(john));
 
         // When
         Student result = this.studentService.findStudentById(1);
@@ -125,56 +121,48 @@ class StudentServiceTest {
 
     @Test
     void testStudentUpdateOwnInfo() {
-        // Given
-        Student update = new Student("john", "John (updated)", "Smith (updated)", "j.smith@abc.edu (updated)", "", false, "admin student");
-        given(this.studentRepository.findById(1)).willReturn(Optional.of(this.students.get(0)));
-        given(this.studentRepository.save(any(Student.class))).willReturn(this.students.get(0));
+        Student current = this.students.get(0);
+        Student update = new Student("john", "Changed", "Smith", "new@abc.edu", "", false, "admin");
+        given(this.userUtils.getUserId()).willReturn(1);
+        given(this.studentRepository.lockAccessible(1, 1, false, false, true)).willReturn(Optional.of(current));
+        given(this.studentRepository.writeProfile(1, 1, false, false, true,
+                "john", "Changed", "Smith", "new@abc.edu")).willReturn(1);
 
-        Instructor instructor = new Instructor();
-        instructor.setRoles("student");
-        MyUserPrincipal myUserPrincipal = new MyUserPrincipal(instructor);
-
-        SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
-        securityContext.setAuthentication(new UsernamePasswordAuthenticationToken(myUserPrincipal, null, myUserPrincipal.getAuthorities()));
-        SecurityContextHolder.setContext(securityContext);
-
-        // When
-        Student result = this.studentService.updateStudent(1, update);
-
-        // Then
-        assertThat(result.getUsername()).isEqualTo(update.getUsername());
-        assertThat(result.getFirstName()).isEqualTo(update.getFirstName());
-        assertThat(result.getLastName()).isEqualTo(update.getLastName());
-        assertThat(result.getEmail()).isEqualTo(update.getEmail());
-        assertThat(result.getRoles()).isNotEqualTo(update.getRoles());
-        assertThat(result.isEnabled()).isNotEqualTo(update.isEnabled());
+        assertThat(this.studentService.updateStudent(1, update)).isSameAs(current);
+        verify(this.studentRepository, never()).writeStatus(any(), any(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
+        verify(this.studentRepository, never()).save(any());
     }
 
     @Test
-    void testInstructorUpdatesStudent() {
-        // Given
-        Student update = new Student("john", "John (updated)", "Smith (updated)", "j.smith@abc.edu (updated)", "", false, "admin student");
-        given(this.studentRepository.findById(1)).willReturn(Optional.of(this.students.get(0)));
-        given(this.studentRepository.save(any(Student.class))).willReturn(this.students.get(0));
+    void testDeactivateRepeatStillChecksScopeAndWritesOnlyStatus() {
+        Student inactive = this.students.get(0);
+        inactive.setEnabled(false);
+        given(this.userUtils.getUserId()).willReturn(42);
+        given(this.userUtils.hasRoleIncludingHierarchy("ROLE_instructor")).willReturn(true);
+        given(this.studentRepository.lockAccessible(1, 42, true, true, false)).willReturn(Optional.of(inactive));
+        given(this.studentRepository.writeStatus(1, 42, true, true, false, false)).willReturn(1);
 
-        Instructor instructor = new Instructor();
-        instructor.setRoles("instructor");
-        MyUserPrincipal myUserPrincipal = new MyUserPrincipal(instructor);
+        assertThat(this.studentService.deactivateStudent(1).isEnabled()).isFalse();
+        verify(this.studentRepository, never()).save(any());
+        assertThat(inactive.getFirstName()).isEqualTo("John");
+    }
 
-        SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
-        securityContext.setAuthentication(new UsernamePasswordAuthenticationToken(myUserPrincipal, null, myUserPrincipal.getAuthorities()));
-        SecurityContextHolder.setContext(securityContext);
+    @Test
+    void testScopeLossAtMutationReturnsNotFound() {
+        given(this.studentRepository.lockAccessible(1, 0, false, true, false))
+                .willReturn(Optional.of(this.students.get(0)));
+        // The mutation's own predicate no longer finds an accessible target.
+        given(this.studentRepository.writeStatus(1, 0, false, true, false, false)).willReturn(0);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> this.studentService.deactivateStudent(1))
+                .isInstanceOf(team.projectpulse.system.exception.ObjectNotFoundException.class);
+        verify(this.studentRepository, never()).save(any());
+    }
 
-        // When
-        Student result = this.studentService.updateStudent(1, update);
-
-        // Then
-        assertThat(result.getUsername()).isEqualTo(update.getUsername());
-        assertThat(result.getFirstName()).isEqualTo(update.getFirstName());
-        assertThat(result.getLastName()).isEqualTo(update.getLastName());
-        assertThat(result.getEmail()).isEqualTo(update.getEmail());
-//        assertThat(result.getRoles()).isEqualTo(update.getRoles());
-        assertThat(result.isEnabled()).isEqualTo(update.isEnabled());
+    @Test
+    void testScopeLossBeforeLookupDoesNotWrite() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> this.studentService.deactivateStudent(1))
+                .isInstanceOf(team.projectpulse.system.exception.ObjectNotFoundException.class);
+        verify(this.studentRepository, never()).writeStatus(any(), any(), anyBoolean(), anyBoolean(), anyBoolean(), anyBoolean());
     }
 
     @Test
